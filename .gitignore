@@ -3,6 +3,14 @@
 .venv/
 .env
 .vscode/settings.json
+
+# Local LLM weights — far over GitHub's 100MB file limit, fetch from Hugging Face instead
+*.safetensors
+Qwen3.5-4B-MLX-4bit/
+
+# Yarn Berry cache/config (local toolchain artifact; project uses yarn classic lockfile)
+.yarn/
+.yarnrc.yml
 **/*.ipynb_checkpoints/
 .DS_Store
 build/

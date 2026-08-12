@@ -86,6 +86,13 @@ _EMPTY_RESPONSE_SUMMARY = (
     "switch to a larger model if this keeps happening.)_"
 )
 
+# Prepended when we surface reasoning because the model never wrote an answer.
+_REASONING_FALLBACK_PREFIX = (
+    "_(The model didn't produce a final answer, so this is its internal "
+    "reasoning. A model that reasons but never commits an action is usually "
+    "too small for this agent — try a larger one.)_\n\n"
+)
+
 _SKILL_LOADED_BANNER = "[SKILL LOADED: {name}]"
 _SKILL_LOADED_RE = re.compile(r"^\[SKILL LOADED: ([^\]]+)\]")
 
@@ -1741,7 +1748,10 @@ class AnalystAgent:
                 if reasoning:
                     logger.info("[AnalystAgent] empty content; falling back to reasoning "
                                 "text for the run summary")
-                    final_text = reasoning
+                    # Label it. Unannounced chain-of-thought reads as a malfunction,
+                    # and the cause is worth naming: a model that thinks but never
+                    # answers is usually too small for this agent.
+                    final_text = _REASONING_FALLBACK_PREFIX + reasoning
                 else:
                     logger.warning("[AnalystAgent] model returned neither content nor "
                                    "reasoning; closing with a placeholder")

@@ -224,6 +224,14 @@ def report_context_window(litellm, model, api_base, api_key):
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())
 
+    def _get(path):
+        # /api/ps is GET-only; POSTing it (an earlier version of this script
+        # did) gets a 405 and silently hides whatever context is really
+        # running, which reads as "couldn't check" rather than the real
+        # number.
+        with urllib.request.urlopen(f"{root}{path}", timeout=20) as r:
+            return json.loads(r.read())
+
     advertised = None
     try:
         info = _post("/api/show", {"model": model}).get("model_info", {})
@@ -242,7 +250,7 @@ def report_context_window(litellm, model, api_base, api_key):
             messages=[{"role": "user", "content": "hi"}], max_tokens=1,
         )
         running = None
-        for m in _post("/api/ps", {}).get("models", []):
+        for m in _get("/api/ps").get("models", []):
             if m.get("name", "").startswith(model.split(":")[0]):
                 running = m.get("context_length")
                 break

@@ -200,6 +200,66 @@ def probe_second_turn(litellm, model, api_base, api_key, acc):
         print("  >>> REPRODUCED: no text, no tool call -> loop returns, UI empty")
 
 
+def report_context_window(litellm, model, api_base, api_key):
+    """Report the context window the server actually runs, vs the model's max.
+
+    Ollama ignores the model's advertised context and applies its own default
+    (4096) unless num_ctx / OLLAMA_CONTEXT_LENGTH says otherwise. The agents
+    send a system prompt, tool schemas and a table schema that alone exceed
+    that, so the model is truncated mid-thought and never reaches an answer —
+    which looks exactly like the model being too weak.
+    """
+    import urllib.request
+
+    print(f"\n{'=' * 68}\ncontext window\n{'=' * 68}")
+    root = api_base.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+
+    def _post(path, payload):
+        req = urllib.request.Request(
+            f"{root}{path}", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())
+
+    advertised = None
+    try:
+        info = _post("/api/show", {"model": model}).get("model_info", {})
+        for key, val in info.items():
+            if key.endswith("context_length"):
+                advertised = val
+                break
+    except Exception as exc:
+        print(f"  (could not read /api/show: {exc} - not an Ollama server?)")
+        return
+
+    # Warm the model so it appears in /api/ps with its running context.
+    try:
+        litellm.completion(
+            model=f"openai/{model}", api_base=api_base, api_key=api_key,
+            messages=[{"role": "user", "content": "hi"}], max_tokens=1,
+        )
+        running = None
+        for m in _post("/api/ps", {}).get("models", []):
+            if m.get("name", "").startswith(model.split(":")[0]):
+                running = m.get("context_length")
+                break
+    except Exception as exc:
+        print(f"  (could not read running context: {exc})")
+        running = None
+
+    print(f"  model supports : {advertised}")
+    print(f"  server runs at : {running}")
+    if running and advertised and running < advertised:
+        print(f"  >>> Running at {running} of {advertised} available.")
+        if running <= 8192:
+            print("  >>> TOO SMALL for the agents' prompts. They will be truncated")
+            print("  >>> mid-thought and never emit an answer or a tool call.")
+            print("  >>> Fix: set OLLAMA_CONTEXT_LENGTH=32768 and restart Ollama.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="qwen3.5:4b")
@@ -218,6 +278,7 @@ def main():
 
     # Non-streaming first (matches the curl you already ran), then the
     # streaming paths the agents actually use.
+    report_context_window(litellm, args.model, args.api_base, args.api_key)
     probe(litellm, args.model, args.api_base, args.api_key, stream=True, with_tools=False)
     acc = probe(litellm, args.model, args.api_base, args.api_key,
                 stream=True, with_tools=True)

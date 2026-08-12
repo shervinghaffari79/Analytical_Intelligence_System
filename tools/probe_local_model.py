@@ -201,13 +201,22 @@ def probe_second_turn(litellm, model, api_base, api_key, acc):
 
 
 def report_context_window(litellm, model, api_base, api_key):
-    """Report the context window the server actually runs, vs the model's max.
+    """Report the context window the server would use if a request doesn't
+    specify one, vs the model's advertised max.
 
     Ollama ignores the model's advertised context and applies its own default
-    (4096) unless num_ctx / OLLAMA_CONTEXT_LENGTH says otherwise. The agents
-    send a system prompt, tool schemas and a table schema that alone exceed
-    that, so the model is truncated mid-thought and never reaches an answer —
-    which looks exactly like the model being too weak.
+    (4096) unless a request sets ``num_ctx`` (or the server's own
+    OLLAMA_CONTEXT_LENGTH env var says otherwise, which is fragile — it needs
+    system-scope ``setx``, a full Ollama restart, and a fresh shell).
+
+    Data Formulator itself is unaffected by whatever this reports: its
+    ollama_chat client sets ``num_ctx`` on every request (see
+    client_utils._apply_ollama_num_ctx), overridable via DF_OLLAMA_NUM_CTX.
+    This check matters for *this probe's* own non-ollama_chat calls above (the
+    openai/-prefixed ones, which don't set num_ctx) and for anything else that
+    talks to the server without specifying a context — a bare curl, a
+    different client, Ollama's CLI. A low number here without a matching
+    truncation symptom in the app is not itself the bug.
     """
     import urllib.request
 
@@ -258,14 +267,16 @@ def report_context_window(litellm, model, api_base, api_key):
         print(f"  (could not read running context: {exc})")
         running = None
 
-    print(f"  model supports : {advertised}")
-    print(f"  server runs at : {running}")
+    print(f"  model supports        : {advertised}")
+    print(f"  server default (no num_ctx set): {running}")
     if running and advertised and running < advertised:
-        print(f"  >>> Running at {running} of {advertised} available.")
+        print(f"  >>> This probe's own calls above didn't set num_ctx, so THEY ran at "
+              f"{running} of {advertised} available.")
         if running <= 8192:
-            print("  >>> TOO SMALL for the agents' prompts. They will be truncated")
-            print("  >>> mid-thought and never emit an answer or a tool call.")
-            print("  >>> Fix: set OLLAMA_CONTEXT_LENGTH=32768 and restart Ollama.")
+            print("  >>> Data Formulator itself is NOT affected — its ollama_chat")
+            print("  >>> client sets num_ctx on every request (default 32768, see")
+            print("  >>> DF_OLLAMA_NUM_CTX). If the app is still truncating, that's a")
+            print("  >>> different symptom worth its own investigation, not this one.")
 
 
 def main():

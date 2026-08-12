@@ -240,6 +240,39 @@ def _apply_ollama_think(params):
     return params
 
 
+_DEFAULT_OLLAMA_NUM_CTX = 32768
+
+
+def _apply_ollama_num_ctx(params):
+    """Set Ollama's context window (``num_ctx``) directly on the request.
+
+    Ollama otherwise defaults to 4096 regardless of what a model advertises,
+    and the only server-side override — the ``OLLAMA_CONTEXT_LENGTH`` env var —
+    requires system-scope ``setx``, a full quit of the Ollama process (not just
+    the service), and a brand new shell before it's even visible; in practice
+    it reliably fails to take effect. A per-request ``num_ctx`` sidesteps all
+    of that: LiteLLM's ``ollama_chat`` provider forwards any unrecognized kwarg
+    straight into the wire request's ``options`` object, confirmed by
+    intercepting ``OllamaChatConfig.transform_request`` — passing
+    ``num_ctx=32768`` produces ``options={"num_ctx": 32768}`` on the actual
+    HTTP body, no server config required.
+
+    Data Formulator's own prompts (system prompt, tool schemas, table schema,
+    conversation/thread history) routinely exceed 4096 tokens on their own; at
+    that ceiling the model is truncated mid-generation and never reaches an
+    answer or a tool call, which reads as the model being too weak rather than
+    starved of room. Override with ``DF_OLLAMA_NUM_CTX`` if 32768 isn't enough
+    for a long session, or needs to shrink for a memory-constrained host —
+    KV-cache memory scales with this number.
+    """
+    params = dict(params)
+    try:
+        params["num_ctx"] = int(os.getenv("DF_OLLAMA_NUM_CTX", "").strip() or _DEFAULT_OLLAMA_NUM_CTX)
+    except ValueError:
+        params["num_ctx"] = _DEFAULT_OLLAMA_NUM_CTX
+    return params
+
+
 class Client(object):
     """
     Returns a LiteLLM client configured for the specified endpoint and model.
@@ -423,6 +456,7 @@ class Client(object):
         effective_stream = stream and not is_ollama
         if self.endpoint == "ollama_chat":
             params = _apply_ollama_think(params)
+            params = _apply_ollama_num_ctx(params)
         call_kwargs = dict(model=self.model, messages=messages,
                            drop_params=True, stream=effective_stream,
                            # We never use litellm's built-in MCP gateway. Setting this

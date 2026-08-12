@@ -13,6 +13,7 @@ Usage (from the repo root):
 """
 
 import argparse
+import json
 import sys
 
 TOOLS = [{
@@ -78,6 +79,8 @@ def probe(litellm, model, api_base, api_key, stream, with_tools):
     n_content = n_rc = n_reasoning = n_tool = 0
     content_parts, rc_parts = [], []
     finish = None
+    # Mirror Data Formulator's accumulation (agent_data_loading_chat.py:858)
+    acc = {}
 
     for chunk in resp:
         if not chunk.choices:
@@ -98,6 +101,16 @@ def probe(litellm, model, api_base, api_key, stream, with_tools):
             n_reasoning += 1
         if getattr(delta, "tool_calls", None):
             n_tool += 1
+            for tcd in delta.tool_calls:
+                idx = tcd.index
+                slot = acc.setdefault(
+                    idx, {"index": idx, "id": None, "name": "", "arguments": ""})
+                if getattr(tcd, "id", None):
+                    slot["id"] = tcd.id
+                if getattr(tcd.function, "name", None):
+                    slot["name"] = tcd.function.name
+                if getattr(tcd.function, "arguments", None):
+                    slot["arguments"] += tcd.function.arguments
 
     text = "".join(content_parts)
     print(f"  delta.content chunks          : {n_content}")
@@ -107,11 +120,84 @@ def probe(litellm, model, api_base, api_key, stream, with_tools):
     print(f"  finish_reason                 : {finish}")
     print(f"  content ({len(text)} chars)")
     print("      " + (repr(text[:300]) if text.strip()
-                      else "*** EMPTY -> Data Formulator renders NOTHING ***"))
+                      else "(no visible text this turn)"))
     if rc_parts:
         joined = "".join(rc_parts)
         print(f"  reasoning_content ({len(joined)} chars, first 200):")
         print("      " + repr(joined[:200]))
+
+    if not text.strip() and not acc:
+        print("  >>> NO TEXT AND NO TOOL CALL: agent_data_loading_chat.py:876")
+        print("  >>> hits `if not tool_calls_acc: return` -> UI SHOWS NOTHING")
+
+    for slot in acc.values():
+        print(f"  --- tool call (index={slot['index']!r}, id={slot['id']!r}) ---")
+        print(f"      name      : {slot['name']!r}")
+        print(f"      arguments : {slot['arguments'][:400]!r}")
+        try:
+            parsed = json.loads(slot["arguments"])
+            print(f"      JSON parse: OK -> keys {sorted(parsed)}")
+        except Exception as exc:
+            print(f"      JSON parse: FAILED ({exc})")
+            print("      >>> DF falls back to tool_args={} (line 903) -> tool runs blind")
+    return acc
+
+
+def probe_second_turn(litellm, model, api_base, api_key, acc):
+    """Feed a tool result back and see whether the model then SAYS anything.
+
+    This is the turn that decides whether the user sees output. If the model
+    answers with neither text nor another tool call, the agent loop returns
+    silently and the UI stays empty.
+    """
+    print(f"\n{'=' * 68}\nturn 2: after tool result (stream=True, tools=True)\n{'=' * 68}")
+    if not acc:
+        print("  skipped - no tool call captured in turn 1")
+        return
+
+    slot = list(acc.values())[0]
+    call_id = slot["id"] or "call_0"
+    messages = [
+        {"role": "user", "content": PROMPT},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": call_id, "type": "function",
+            "function": {"name": slot["name"], "arguments": slot["arguments"] or "{}"},
+        }]},
+        {"role": "tool", "tool_call_id": call_id,
+         "content": '{"status":"ok","loaded":["movies"],"rows":4803,'
+                    '"columns":["title","genres","vote_average"]}'},
+    ]
+
+    n_content = n_tool = 0
+    parts = []
+    finish = None
+    try:
+        for chunk in litellm.completion(
+            model=f"openai/{model}", api_base=api_base, api_key=api_key,
+            messages=messages, tools=TOOLS, stream=True,
+        ):
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.finish_reason:
+                finish = choice.finish_reason
+            if getattr(choice.delta, "content", None):
+                n_content += 1
+                parts.append(choice.delta.content)
+            if getattr(choice.delta, "tool_calls", None):
+                n_tool += 1
+    except Exception as exc:
+        print(f"  REQUEST FAILED: {type(exc).__name__}: {exc}")
+        return
+
+    text = "".join(parts)
+    print(f"  delta.content chunks    : {n_content}")
+    print(f"  delta.tool_calls chunks : {n_tool}")
+    print(f"  finish_reason           : {finish}")
+    print(f"  content ({len(text)} chars)")
+    print("      " + (repr(text[:300]) if text.strip() else "*** EMPTY ***"))
+    if not text.strip() and n_tool == 0:
+        print("  >>> REPRODUCED: no text, no tool call -> loop returns, UI empty")
 
 
 def main():
@@ -132,9 +218,10 @@ def main():
 
     # Non-streaming first (matches the curl you already ran), then the
     # streaming paths the agents actually use.
-    probe(litellm, args.model, args.api_base, args.api_key, stream=False, with_tools=False)
     probe(litellm, args.model, args.api_base, args.api_key, stream=True, with_tools=False)
-    probe(litellm, args.model, args.api_base, args.api_key, stream=True, with_tools=True)
+    acc = probe(litellm, args.model, args.api_base, args.api_key,
+                stream=True, with_tools=True)
+    probe_second_turn(litellm, args.model, args.api_base, args.api_key, acc or {})
     return 0
 
 

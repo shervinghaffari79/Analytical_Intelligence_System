@@ -227,7 +227,7 @@ export const ModelSelectionButton: React.FC<{}> = ({ }) => {
                         setNewApiVersion("2024-02-15");
                     }
                 }}
-                options={['openai', 'azure', 'ollama', 'anthropic', 'gemini']}
+                options={['openai', 'azure', 'ollama', 'ollama_chat', 'anthropic', 'gemini']}
                 renderOption={(props, option) => (
                     <Typography {...props} onClick={() => setNewEndpoint(option)} sx={{ fontSize: "0.75rem" }}>
                         {option}

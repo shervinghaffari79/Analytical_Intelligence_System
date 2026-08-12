@@ -1,3 +1,4 @@
+import os
 import json
 import litellm
 from types import SimpleNamespace
@@ -215,6 +216,30 @@ def _salvage_tool_calls_from_content(response, tools):
     return response
 
 
+def _apply_ollama_think(params):
+    """Decide Ollama's ``think`` flag for an ``ollama_chat`` call.
+
+    LiteLLM derives it from ``reasoning_effort``::
+
+        think = reasoning_effort in {"low", "medium", "high"}
+
+    and ``reasoning_effort_for()`` only ever yields ``"none"`` for GPT-5 codex /
+    pro, so every local model would otherwise think on every call. That is a bad
+    default here: a small model spends its whole budget reasoning and never
+    reaches a tool call or an answer, and — measured against qwen3.5:4b — it also
+    hallucinates vaguer tool arguments than the same model with thinking off.
+
+    So thinking is off unless ``DF_OLLAMA_THINK`` is truthy. Any value outside
+    LiteLLM's set disables it; ``"none"`` is used for readability on the wire.
+    """
+    params = dict(params)
+    if os.getenv("DF_OLLAMA_THINK", "").strip().lower() in ("1", "true", "yes"):
+        params["reasoning_effort"] = "low"
+    else:
+        params["reasoning_effort"] = "none"
+    return params
+
+
 class Client(object):
     """
     Returns a LiteLLM client configured for the specified endpoint and model.
@@ -255,6 +280,23 @@ class Client(object):
                 )
                 self.params["azure_ad_token_provider"] = token_provider
             self.params["custom_llm_provider"] = "azure"
+        elif self.endpoint == "ollama_chat":
+            # Ollama's native /api/chat, via LiteLLM's ollama_chat provider.
+            # Preferred over "ollama" (which targets the older /api/generate and
+            # infers tool support by string-matching the model template) and over
+            # pointing "openai" at /v1 (which silently ignores the `think` flag,
+            # so a reasoning model cannot be quietened). LiteLLM appends the path
+            # itself, so hand it the bare host.
+            chat_base = (api_base or "http://localhost:11434").rstrip("/")
+            for suffix in ("/api/chat", "/api", "/v1"):
+                if chat_base.endswith(suffix):
+                    chat_base = chat_base[: -len(suffix)]
+                    break
+            self.params["api_base"] = chat_base
+            if model.startswith("ollama_chat/"):
+                self.model = model
+            else:
+                self.model = f"ollama_chat/{model}"
         elif self.endpoint == "ollama":
             ollama_base = api_base if api_base else "http://localhost:11434"
             # LiteLLM appends "/api/generate" itself, so strip a user-supplied
@@ -379,6 +421,8 @@ class Client(object):
         ``_synthesize_stream``. All other providers stream natively."""
         is_ollama = self.endpoint == "ollama"
         effective_stream = stream and not is_ollama
+        if self.endpoint == "ollama_chat":
+            params = _apply_ollama_think(params)
         call_kwargs = dict(model=self.model, messages=messages,
                            drop_params=True, stream=effective_stream,
                            # We never use litellm's built-in MCP gateway. Setting this

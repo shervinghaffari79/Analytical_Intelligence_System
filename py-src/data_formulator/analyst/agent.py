@@ -79,6 +79,13 @@ _CORE_SKILL = "core"
 # (_rehydrate_loaded_skills): they share this template + regex so they cannot
 # drift, and the regex is anchored to the message start so only banners *we*
 # emitted match — never the same text pasted by a user or echoed by the model.
+# Shown as the run summary when a turn commits no action and returns neither
+# content nor reasoning — better than closing the run with a blank reply.
+_EMPTY_RESPONSE_SUMMARY = (
+    "_(The model returned an empty response. Try rephrasing your request, or "
+    "switch to a larger model if this keeps happening.)_"
+)
+
 _SKILL_LOADED_BANNER = "[SKILL LOADED: {name}]"
 _SKILL_LOADED_RE = re.compile(r"^\[SKILL LOADED: ([^\]]+)\]")
 
@@ -1723,8 +1730,25 @@ class AnalystAgent:
             final_msg: dict[str, Any] = {"role": "assistant", "content": content or None}
             attach_reasoning_content(final_msg, choice.message)
             messages.append(final_msg)
+
+            # ``final_text`` becomes the run's summary in the completion event, so
+            # an empty one closes the run with a blank reply. Reasoning models can
+            # end a turn having written only to the reasoning channel; prefer that
+            # text over showing the user nothing at all.
+            final_text = content.strip()
+            if not final_text:
+                reasoning = (getattr(choice.message, "reasoning_content", None) or "").strip()
+                if reasoning:
+                    logger.info("[AnalystAgent] empty content; falling back to reasoning "
+                                "text for the run summary")
+                    final_text = reasoning
+                else:
+                    logger.warning("[AnalystAgent] model returned neither content nor "
+                                   "reasoning; closing with a placeholder")
+                    final_text = _EMPTY_RESPONSE_SUMMARY
+
             yield {"type": "agent_action", "action_data": None, "reason": "done",
-                   "final_text": content.strip(), "llm_calls": llm_calls_in_cycle}
+                   "final_text": final_text, "llm_calls": llm_calls_in_cycle}
             return
 
         # --- tool rounds exhausted ---

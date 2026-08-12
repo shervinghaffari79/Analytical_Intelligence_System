@@ -26,6 +26,34 @@ logger = logging.getLogger(__name__)
 
 _AGENT_ID = "data_loading_chat"
 
+# Prompts for _forced_summary_turn. The tool-budget pair covers a turn cut short
+# by max_iterations; the empty-turn pair covers a turn that returned neither a
+# tool call nor visible text (common with reasoning models, which can spend the
+# whole turn in the reasoning channel and close with empty content).
+_TOOL_BUDGET_NOTICE = (
+    "(system notice) You've used the tool budget for this turn, so no "
+    "more tools can run right now. Do NOT attempt any tool calls. In a "
+    "short, natural message, tell the user what you found or did so far "
+    "and what's still left, then ask whether they'd like you to keep "
+    "going. The user will see a 'Continue' button, so address them "
+    "directly (e.g. \"Want me to keep going?\")."
+)
+_TOOL_BUDGET_FALLBACK = (
+    "\n\n_(I reached the step limit for this turn. Ask me to continue "
+    "and I'll pick up where I left off.)_"
+)
+
+_EMPTY_TURN_NOTICE = (
+    "(system notice) Your last turn produced no reply the user can see. "
+    "Answer them now in plain text. Do NOT call any tools — say what you "
+    "found, what you'd suggest, or ask a clarifying question if you need "
+    "more information."
+)
+_EMPTY_TURN_FALLBACK = (
+    "\n\n_(I wasn't able to produce a response to that. Try rephrasing, or "
+    "ask me something more specific.)_"
+)
+
 # Max live probe_data calls allowed per user turn (design 37 §7).
 PROBE_TURN_BUDGET = 20
 
@@ -874,6 +902,22 @@ class DataLoadingAgent:
             # No tool calls -> the model produced its final turn (either text, or
             # an intentional silence after showing an interactive preview). Done.
             if not tool_calls_acc:
+                # ...unless nothing ever reached the user. A reasoning model can
+                # spend an entire turn in the reasoning channel and close with
+                # empty content, which lands here and ends the run with a blank
+                # reply — the request succeeds, the log says 200, and the UI shows
+                # nothing. Silence is only legitimate once something is on screen
+                # (an interactive preview arrives as an action), so give the model
+                # one tool-free turn to actually say something.
+                if not "".join(collected_text).strip() and not actions:
+                    logger.info(
+                        "[DataLoadingChat] turn produced no text, no tool calls and "
+                        "no actions; eliciting a tool-free reply"
+                    )
+                    yield from self._forced_summary_turn(
+                        llm_messages, collected_text,
+                        notice=_EMPTY_TURN_NOTICE, fallback=_EMPTY_TURN_FALLBACK,
+                    )
                 return
 
             # Build assistant message with tool calls for LLM context
@@ -966,24 +1010,23 @@ class DataLoadingAgent:
         # resumes from its summary + the chat history (no server-side loop state).
         yield {"type": "continue_prompt"}
 
-    def _forced_summary_turn(self, llm_messages, collected_text):
-        """Elicit a final, tool-free response after the tool-call limit is reached.
+    def _forced_summary_turn(self, llm_messages, collected_text,
+                             notice=None, fallback=None):
+        """Elicit a final, tool-free response so the turn never ends silently.
 
-        Without this, a long multi-step turn ends the moment the loop hits
+        Two callers, same need. After the tool-call limit is reached, a long
+        multi-step turn would otherwise stop the moment the loop hits
         max_iterations — right after a tool call — and the agent never gets the
-        turn where it would speak, so the user sees the tool output and nothing
-        else. Here we ask the model (with no tools available) to summarize.
+        turn where it would speak. A turn that returns no tool calls *and* no
+        visible content lands in the same place from the other direction. Either
+        way we ask the model (with no tools available) to address the user.
+
+        ``notice`` and ``fallback`` let the caller phrase this for its own case;
+        both default to the tool-budget wording.
         """
         llm_messages.append({
             "role": "user",
-            "content": (
-                "(system notice) You've used the tool budget for this turn, so no "
-                "more tools can run right now. Do NOT attempt any tool calls. In a "
-                "short, natural message, tell the user what you found or did so far "
-                "and what's still left, then ask whether they'd like you to keep "
-                "going. The user will see a 'Continue' button, so address them "
-                "directly (e.g. \"Want me to keep going?\")."
-            ),
+            "content": notice or _TOOL_BUDGET_NOTICE,
         })
         try:
             # get_completion() dispatches without tools, so the model must reply
@@ -994,12 +1037,9 @@ class DataLoadingAgent:
             )
         except Exception as e:
             logger.error(f"forced summary call failed: {e}")
-            fallback = (
-                "\n\n_(I reached the step limit for this turn. Ask me to continue "
-                "and I'll pick up where I left off.)_"
-            )
-            collected_text.append(fallback)
-            yield {"type": "text_delta", "content": fallback}
+            text = fallback or _TOOL_BUDGET_FALLBACK
+            collected_text.append(text)
+            yield {"type": "text_delta", "content": text}
             return
 
         wrote_text = False
@@ -1013,12 +1053,9 @@ class DataLoadingAgent:
                 yield {"type": "text_delta", "content": delta.content}
 
         if not wrote_text:
-            fallback = (
-                "\n\n_(I reached the step limit for this turn. Ask me to continue "
-                "and I'll pick up where I left off.)_"
-            )
-            collected_text.append(fallback)
-            yield {"type": "text_delta", "content": fallback}
+            text = fallback or _TOOL_BUDGET_FALLBACK
+            collected_text.append(text)
+            yield {"type": "text_delta", "content": text}
 
     # ------------------------------------------------------------------
     # LLM call with tool support

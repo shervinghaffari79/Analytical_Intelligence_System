@@ -267,6 +267,44 @@ class MySQLDataLoader(ExternalDataLoader):
             query, relation=relation, dialect=dialect, execute=_execute,
         )
 
+    def get_column_values(
+        self,
+        source_table: str,
+        column_name: str,
+        keyword: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Distinct values of a column, most frequent first (smart filter input).
+
+        ``keyword`` is a substring match that ignores Arabic/Persian letter and
+        digit variants, so typing «کر» also finds values stored as «كرج».
+        """
+        from data_formulator.data_loader.external_data_loader import (
+            build_source_filter_where_clause_inline,
+        )
+
+        limit = max(1, min(int(limit or 50), 500))
+        offset = max(0, int(offset or 0))
+        if "." in source_table:
+            db, tbl = source_table.split(".", 1)
+            relation = f"{_esc_id(db.strip('`'), '`')}.{_esc_id(tbl.strip('`'), '`')}"
+        else:
+            relation = _esc_id(source_table.strip("`"), "`")
+        qcol = _esc_id(column_name, "`")
+        filters: list[dict[str, Any]] = [{"column": column_name, "operator": "IS_NOT_NULL"}]
+        if keyword:
+            filters.append({"column": column_name, "operator": "ILIKE", "value": keyword})
+        where = build_source_filter_where_clause_inline(filters, quote_char="`", dialect="mysql")
+        query = (
+            f"SELECT {qcol} AS v, COUNT(*) AS n FROM {relation} {where} "
+            f"GROUP BY {qcol} ORDER BY n DESC, v LIMIT {limit + 1} OFFSET {offset}"
+        )
+        with self._lock:
+            rows = self._read_sql(query).to_pylist()
+        options = [{"label": str(r["v"]), "value": r["v"]} for r in rows[:limit]]
+        return {"options": options, "has_more": len(rows) > limit}
+
     def list_tables(self, table_filter: str | None = None) -> list[dict[str, Any]]:
         """List available tables from MySQL database."""
         with self._lock:

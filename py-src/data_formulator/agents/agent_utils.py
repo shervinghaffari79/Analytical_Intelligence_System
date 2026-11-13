@@ -121,6 +121,9 @@ def _source_table_matches_catalog_entry(
     return bool(source_table and source_table in candidates)
 
 
+from data_formulator.datalake.catalog_profile import SEMANTIC_NOTES as _SEMANTIC_NOTES
+
+
 def build_catalog_metadata_lookups(
     workspace,
 ) -> tuple[dict[str, str], dict[str, dict[str, str]], dict[str, list[str]], dict[str, dict[str, dict]]]:
@@ -182,6 +185,11 @@ def build_catalog_metadata_lookups(
                     continue
                 col_name = str(col["name"])
                 col_desc = col.get("source_description") or col.get("description")
+                # Facts derived from the data that change how the column must
+                # be used (e.g. Jalali dates stored as text) travel with it.
+                sem_note = _SEMANTIC_NOTES.get(col.get("semantic_type") or "")
+                if sem_note:
+                    col_desc = f"{col_desc} [{sem_note}]" if col_desc else sem_note
                 if col_desc:
                     column_descs[col_name] = str(col_desc)
                 cm: dict[str, str] = {}
@@ -195,6 +203,10 @@ def build_catalog_metadata_lookups(
                     cm["source_description"] = str(col_desc)
                 if cm:
                     col_metas[col_name] = cm
+            if meta.get("relationships"):
+                table_extra_cache[table_name] = [
+                    "Relationships (inferred): " + "; ".join(str(r) for r in meta["relationships"][:12])
+                ]
             if column_descs:
                 col_desc_cache[table_name] = column_descs
             if col_metas:

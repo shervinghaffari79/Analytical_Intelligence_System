@@ -363,6 +363,31 @@ def _fetch_live_metadata(source_id: str, path: list) -> dict[str, Any] | None:
         return None
 
 
+def _profile_on_demand(user_home: Any, source_id: str, target: dict[str, Any]) -> dict[str, Any] | None:
+    """Profile one catalog table through its live loader and persist the result.
+
+    Returns the table's metadata with the profile overlaid, or ``None`` when
+    the source is not connected or profiling fails. Never raises.
+    """
+    try:
+        from data_formulator.data_connector import resolve_live_loader
+        from data_formulator.datalake.catalog_profile import (
+            apply_profiles, build_profiles, load_profiles, save_profiles,
+        )
+
+        loader = resolve_live_loader(source_id)
+        store = load_profiles(user_home, source_id)
+        summary = build_profiles(loader, [target], store, time_budget_s=20.0)
+        if not summary.get("profiled"):
+            return None
+        save_profiles(user_home, source_id, store)
+        apply_profiles([target], store)
+        return target.get("metadata") or {}
+    except Exception:
+        logger.debug("On-demand profiling failed for %s", source_id, exc_info=True)
+        return None
+
+
 def handle_read_catalog_metadata(
     source_id: str,
     table_key: str,
@@ -420,6 +445,14 @@ def handle_read_catalog_metadata(
             meta = merged
             live_note = "live (fetched from source; not cached)"
 
+    # Undocumented table that has never been profiled: derive metadata from
+    # a bounded sample now, so the agent sees value examples, date formats and
+    # inferred keys instead of bare column names. Best-effort and persisted.
+    if meta.get("columns") and not any(c.get("profile") for c in meta["columns"]):
+        profiled = _profile_on_demand(Path(user_home), source_id, target)
+        if profiled is not None:
+            meta = profiled
+
     # Build LLM-friendly text output with field whitelist
     lines = [f"## {target.get('name', table_key)}"]
     lines.append(f"Source: {source_id}")
@@ -438,7 +471,11 @@ def handle_read_catalog_metadata(
 
     table_desc = meta.get("description", "") or meta.get("source_description", "")
     if table_desc:
-        lines.append(f"\nDescription: {table_desc}")
+        label = "Description (auto-generated from data)" if meta.get("description_source") == "auto" else "Description"
+        lines.append(f"\n{label}: {table_desc}")
+    if meta.get("relationships"):
+        lines.append("\nRelationships (inferred from data; none are declared):")
+        lines.extend(f"  - {r}" for r in meta["relationships"][:20])
 
     columns = meta.get("columns", [])
     if columns:
@@ -458,9 +495,12 @@ def handle_read_catalog_metadata(
                 line += f": {cdesc}"
             if expr:
                 line += f"  [calc: {expr}]"
+            cprof = col.get("profile", "")
+            if cprof:
+                line += f"  {{{cprof}}}"
             lines.append(line)
         if len(columns) > 50:
             lines.append(f"  ... and {len(columns) - 50} more columns")
 
     text = "\n".join(lines)
-    return text[:4000] + "\n..." if len(text) > 4000 else text
+    return text[:8000] + "\n..." if len(text) > 8000 else text

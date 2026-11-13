@@ -218,6 +218,34 @@ def build_where_clause_inline(
     return "WHERE " + " AND ".join(parts)
 
 
+def _fold_filter(qcol: str, op: str, val: Any, dialect: str) -> tuple[str, Any] | None:
+    """Fold Arabic-script spelling variants on both sides of a text filter.
+
+    Returns ``(column_expr, value)`` with the column wrapped in the folding
+    SQL and the value folded the same way, or ``None`` when the filter does
+    not need it (see :mod:`text_folding`).
+    """
+    from data_formulator.data_loader import text_folding as tf
+
+    if dialect.lower() not in tf.FOLDING_DIALECTS:
+        return None
+    if op not in ("=", "!=", "IN", "NOT IN", "LIKE", "ILIKE"):
+        return None
+    substring = op in ("LIKE", "ILIKE")
+    vals = val if isinstance(val, (list, tuple)) else [val]
+    plans = [tf.fold_plan(v, substring=substring) for v in vals]
+    letters = any(p[0] for p in plans)
+    digits = any(p[1] for p in plans)
+    if not (letters or digits):
+        return None
+
+    def _fold(v: Any) -> Any:
+        return tf.fold_literal(v, letters=letters, digits=digits) if isinstance(v, str) else v
+
+    new_val = [_fold(v) for v in vals] if isinstance(val, (list, tuple)) else _fold(val)
+    return tf.sql_fold(qcol, letters=letters, digits=digits), new_val
+
+
 def build_source_filter_where_clause_inline(
     source_filters: list[dict[str, Any]] | None,
     quote_char: str = '`',
@@ -251,7 +279,9 @@ def build_source_filter_where_clause_inline(
         if not isinstance(sf, dict):
             continue
         col = sf.get("column", "")
-        source_op = (sf.get("operator") or "").upper().strip()
+        # Accept ``op`` as an alias: probe filters use that key, and a filter
+        # whose operator is silently dropped would load the whole table.
+        source_op = str(sf.get("operator") or sf.get("op") or "").upper().strip()
         op = _SOURCE_FILTER_OPERATOR_MAP.get(source_op)
         val = sf.get("value")
 
@@ -262,6 +292,10 @@ def build_source_filter_where_clause_inline(
             qcol = _esc_id(col, quote_char)
         except ValueError:
             continue
+
+        folded = _fold_filter(qcol, op, val, dialect)
+        if folded is not None:
+            qcol, val = folded
 
         if op in ("IS NULL", "IS NOT NULL"):
             parts.append(f"{qcol} {op}")

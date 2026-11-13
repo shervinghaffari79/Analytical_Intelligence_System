@@ -2086,6 +2086,80 @@ def connector_sync_catalog_metadata():
         classify_and_raise_connector_error(e, operation="catalog")
 
 
+@connectors_bp.route("/api/connectors/profile-catalog", methods=["POST"])
+def connector_profile_catalog():
+    """Derive metadata for tables the source left undocumented.
+
+    Profiles a bounded sample of each table (value ranges, frequent values,
+    date formats, inferred keys and relationships) and, when a ``model`` is
+    supplied, asks it for a short description and search keywords per table.
+    Results are stored beside the catalog cache and overlaid whenever the
+    catalog is read, so the agents' ``find_data`` / ``describe_data`` see them.
+
+    Request::
+
+        {
+            "connector_id": "...",
+            "model": {...},            # optional; omit for profiling only
+            "tables": ["db.table"],    # optional table_key subset
+            "refresh": false           # re-do tables that already have results
+        }
+
+    Both phases are time-boxed; ``remaining`` > 0 in the response means the
+    call should be repeated to continue where it stopped.
+    """
+    data = request.get_json() or {}
+    source = _resolve_connector(data)
+
+    try:
+        loader = source._require_loader()
+        from data_formulator.datalake import catalog_profile as cp
+        from data_formulator.datalake.catalog_cache import load_catalog, save_catalog
+        from data_formulator.datalake.workspace import get_user_home
+
+        user_home = get_user_home(source._get_identity())
+        tables = load_catalog(user_home, source._source_id)
+        if not tables:
+            tables = loader.sync_catalog_metadata()
+            save_catalog(user_home, source._source_id, tables)
+            tables = load_catalog(user_home, source._source_id) or tables
+
+        only = data.get("tables")
+        only_set = {str(t) for t in only} if isinstance(only, list) and only else None
+        refresh = bool(data.get("refresh"))
+
+        store = cp.load_profiles(user_home, source._source_id)
+        profile_summary = cp.build_profiles(
+            loader, tables, store, only=only_set, refresh=refresh,
+            time_budget_s=float(data.get("profile_budget_s", 120)),
+        )
+        cp.save_profiles(user_home, source._source_id, store)
+
+        describe_summary = None
+        if data.get("model"):
+            from data_formulator.agents.agent_catalog_describe import CatalogDescribeAgent
+            from data_formulator.routes.agents import get_client
+
+            # Descriptions are generated from tables with profile facts applied.
+            cp.apply_profiles(tables, store)
+            agent = CatalogDescribeAgent(get_client(data["model"]))
+            describe_summary = cp.describe_tables(
+                agent, tables, store, only=only_set, refresh=refresh,
+                time_budget_s=float(data.get("describe_budget_s", 600)),
+            )
+            cp.save_profiles(user_home, source._source_id, store)
+
+        return json_ok({
+            "profile": profile_summary,
+            "describe": describe_summary,
+            "remaining": profile_summary["remaining"] + (describe_summary or {}).get("remaining", 0),
+        })
+    except AppError:
+        raise
+    except Exception as e:
+        classify_and_raise_connector_error(e, operation="catalog")
+
+
 @connectors_bp.route("/api/connectors/search-catalog", methods=["POST"])
 def connector_search_catalog():
     """Search a connected connector's catalog without reconnecting."""

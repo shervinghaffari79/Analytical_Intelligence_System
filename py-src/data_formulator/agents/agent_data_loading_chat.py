@@ -71,7 +71,7 @@ Tools available:
 - fetch_url — fetch a public http(s) URL and save the raw payload to scratch/ (the execute_python sandbox has NO network). Does not parse — read it with read_file and/or process it with execute_python.
 - list_data — browse the catalog hierarchy of connected sources (cache-only, fast)
 - find_data — regex search across cached catalogs (names, descriptions, columns)
-- describe_data — read full metadata (schema, columns, row count) for one table
+- describe_data — read full metadata for one table (columns, descriptions, row count, example values, inferred relationships)
 - probe_data — run a bounded read on one table (count / distinct values / aggregate / sample) to size a slice and pick real filter values. Returns at most a few hundred rows — for inspection, NOT bulk loading.
 - show_user_data_preview — show interactive table preview with Load button (for execute_python results or extracted tables only)
 - propose_load_plan — propose a multi-table loading plan for user confirmation
@@ -222,6 +222,24 @@ Rules:
 - execute_python auto-saves ALL DataFrames created in code.
 - In propose_load_plan, always pass source_id and table_key exactly from find_data/describe_data. If propose_load_plan returns an error listing valid source_ids, re-run find_data with a better query and retry — do NOT guess IDs.
 - Do NOT set row_limit in propose_load_plan; the system applies the user's configured global limit automatically.
+
+Undocumented or non-English sources:
+- Many databases have no descriptions and use abbreviated or transliterated names (e.g. Persian
+  written in Latin letters: moshtari = customer, faktor = invoice, kala = product, anbar =
+  warehouse, tarikh = date). If find_data returns nothing for the user's words, do NOT give up
+  or guess: call list_data(source_id) to see every table name, then describe_data on the
+  plausible ones. describe_data reports facts measured from the data in {{braces}} — example
+  values, value ranges, date formats — and relationships inferred between tables. Decide what
+  a table means from those VALUES, not from its name alone.
+- When the request needs several related tables (a fact table plus the tables its columns
+  reference), include all of them in one propose_load_plan.
+- A column marked as a Jalali (Solar Hijri) date must be filtered with Jalali values in the
+  stored format (text 1402/01/01, or integer 14020101) — never a Gregorian date. Convert the
+  user's period first (Jalali year 1402 = 21 March 2023 to 19 March 2024).
+- A column marked as a numeric code has no readable meaning on its own; if describe_data names
+  a lookup table that decodes it, load that table too.
+- Text filters match Persian values regardless of Arabic/Persian letter forms (ي/ی, ك/ک) and
+  Persian/ASCII digits, so pass the value as the user wrote it.
 
 Filter rules for propose_load_plan:
 - You MUST call describe_data BEFORE proposing filters. Do NOT guess column names or values.
@@ -435,7 +453,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "describe_data",
-            "description": "Read full metadata (columns, types, description, row count) for one table. Use source_id + table_key from find_data results.",
+            "description": "Read full metadata for one table: columns, types, descriptions, row count, plus facts measured from the data (example values, ranges, date formats) and inferred relationships to other tables. Use source_id + table_key from find_data or list_data results.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1858,7 +1876,7 @@ class DataLoadingAgent:
                 "error": (
                     "All proposed candidates failed to resolve against the catalog. "
                     f"Errors: {failures}. "
-                    "Re-run search_data_candidates and read_candidate_metadata, then "
+                    "Re-run find_data (or list_data) and describe_data, then "
                     "call propose_load_plan again with the exact source_id and "
                     f"table_key from those tools.\n\n{hint}"
                 )
@@ -2222,7 +2240,9 @@ class DataLoadingAgent:
             column = str(item.get("column") or "").strip()
             if not column:
                 continue
-            op = str(item.get("operator") or "EQ").strip().upper()
+            # probe_data filters use ``op``; models reuse that key here. Without
+            # the alias a range filter silently degraded to EQ.
+            op = str(item.get("operator") or item.get("op") or "EQ").strip().upper()
             op = op_map.get(op, op)
             if op not in valid_ops:
                 op = "EQ"

@@ -182,7 +182,7 @@ def _compile_where(filters: list[dict[str, Any]], dialect: SqlDialect) -> str:
         if not isinstance(f, dict):
             continue
         col = f.get("column")
-        op = _FILTER_OP_TO_SQL.get((f.get("op") or "").upper().strip())
+        op = _FILTER_OP_TO_SQL.get(str(f.get("op") or f.get("operator") or "").upper().strip())
         if not col or op is None:
             continue
         try:
@@ -190,6 +190,13 @@ def _compile_where(filters: list[dict[str, Any]], dialect: SqlDialect) -> str:
         except ValueError:
             continue
         val = f.get("value")
+
+        # Persian data mixes Arabic/Persian letter and digit code points; fold
+        # both sides so a probe finds rows typed either way.
+        from data_formulator.data_loader.external_data_loader import _fold_filter
+        folded = _fold_filter(qcol, op, val, dialect.name)
+        if folded is not None:
+            qcol, val = folded
 
         if op in ("IS NULL", "IS NOT NULL"):
             parts.append(f"{qcol} {op}")

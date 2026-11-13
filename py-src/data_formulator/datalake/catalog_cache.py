@@ -105,10 +105,19 @@ def _load_catalog_raw(workspace_root: Path | str, source_id: str) -> dict[str, A
         if not path.exists():
             return None
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:
         logger.debug("Failed to read catalog cache %s", path, exc_info=True)
         return None
+    # Overlay automatically derived metadata (profiles, generated
+    # descriptions). Kept in a separate store so a re-sync never discards it.
+    try:
+        from data_formulator.datalake.catalog_profile import apply_profiles, load_profiles
+        if isinstance(raw, dict) and isinstance(raw.get("tables"), list):
+            apply_profiles(raw["tables"], load_profiles(workspace_root, raw.get("source_id") or source_id))
+    except Exception:
+        logger.debug("Failed to overlay catalog profile for %s", source_id, exc_info=True)
+    return raw
 
 
 def load_catalog(workspace_root: Path | str, source_id: str) -> list[dict[str, Any]] | None:
@@ -228,8 +237,26 @@ def _search_python(
     except re.error as exc:
         raise CatalogSearchError(f"Invalid query regex: {exc}") from exc
 
+    # Persian text is stored with interchangeable Arabic/Persian code points;
+    # compare folded forms so «مشتری» matches «مشتري».
+    from data_formulator.data_loader.text_folding import fold_text
+    folded_needle = fold_text(needle)
+    compiled_folded = None
+    if folded_needle != needle:
+        try:
+            compiled_folded = re.compile(folded_needle, re.IGNORECASE)
+        except re.error:
+            compiled_folded = None
+
     def _matches(text: str) -> bool:
-        return bool(text) and compiled.search(text) is not None
+        if not text:
+            return False
+        if compiled.search(text) is not None:
+            return True
+        folded = fold_text(text)
+        if folded != text and compiled.search(folded) is not None:
+            return True
+        return compiled_folded is not None and compiled_folded.search(folded) is not None
 
     results: list[dict[str, Any]] = []
     plen = len(path_prefix) if path_prefix else 0
@@ -275,7 +302,17 @@ def _search_python(
             src_desc = meta.get("description", "")
             if "description" in match_fields and src_desc and _matches(src_desc):
                 score += 5
-                match_reasons.append("source_description")
+                match_reasons.append(
+                    "generated_description" if meta.get("description_source") == "auto"
+                    else "source_description"
+                )
+
+            # Generated search keywords (bilingual) for undocumented tables.
+            if "description" in match_fields:
+                hit = [k for k in meta.get("keywords", []) if isinstance(k, str) and _matches(k)]
+                if hit:
+                    score += 4
+                    match_reasons.append("keyword")
 
             # Source columns
             if "columns" in match_fields:
@@ -292,6 +329,14 @@ def _search_python(
                         score += 1
                         if "source_column_description" not in match_reasons:
                             match_reasons.append("source_column_description")
+                    # Profiled values: lets a search for «تهران» or "cash" find
+                    # the table that actually stores that value.
+                    cprof = col.get("profile", "")
+                    if cprof and _matches(cprof):
+                        matched_cols.append(cname)
+                        score += 1
+                        if "column_values" not in match_reasons:
+                            match_reasons.append("column_values")
 
             if score > 0:
                 source_hits.append({

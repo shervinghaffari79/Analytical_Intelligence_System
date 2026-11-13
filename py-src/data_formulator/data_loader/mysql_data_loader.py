@@ -299,7 +299,7 @@ class MySQLDataLoader(ExternalDataLoader):
 
             # Batch-fetch columns with COLUMN_COMMENT
             columns_query = f"""
-                SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT
+                SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT, COLUMN_KEY
                 FROM information_schema.columns
                 WHERE {db_filter}
                 ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
@@ -317,6 +317,11 @@ class MySQLDataLoader(ExternalDataLoader):
                 comment = cr.get("COLUMN_COMMENT")
                 if comment and str(comment).strip():
                     entry["description"] = str(comment).strip()
+                # PRI / UNI / MUL — lets relationship inference and the agent
+                # see declared keys even when no foreign keys are declared.
+                col_key = cr.get("COLUMN_KEY")
+                if col_key and str(col_key).strip():
+                    entry["key"] = str(col_key).strip()
                 col_map.setdefault(key, []).append(entry)
 
             results = []

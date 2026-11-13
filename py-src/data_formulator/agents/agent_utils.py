@@ -106,6 +106,94 @@ def accumulate_reasoning_content(
     return accumulated
 
 
+class ToolCallAccumulator:
+    """Assemble tool calls from streamed chat-completion deltas.
+
+    OpenAI-style streams give every call its own ``index`` and send the id and
+    name once, followed by argument fragments. Ollama (through LiteLLM) sends
+    each call whole, and several parallel calls can all arrive with index 0.
+    Keying on the index alone glues those into one call whose arguments are
+    ``{...}{...}`` — invalid JSON that fails the tool and then crashes the next
+    request when the history is re-serialised.
+
+    A delta that carries a *new* id and a name for an index that already holds
+    a named call therefore starts a new call.
+    """
+
+    def __init__(self) -> None:
+        self._slots: list[dict[str, Any]] = []
+        self._by_index: dict[int, dict[str, Any]] = {}
+
+    def add(self, delta: Any) -> dict[str, Any]:
+        """Fold one ``tool_calls`` delta in; returns the slot it went to."""
+        idx = getattr(delta, "index", 0) or 0
+        fn = getattr(delta, "function", None)
+        d_id = getattr(delta, "id", None)
+        d_name = getattr(fn, "name", None) if fn is not None else None
+
+        slot = self._by_index.get(idx)
+        starts_new = (
+            slot is not None and bool(d_name) and bool(slot["name"])
+            and bool(d_id) and d_id != slot["id"]
+        )
+        if slot is None or starts_new:
+            slot = {"id": None, "name": "", "arguments": ""}
+            self._slots.append(slot)
+            self._by_index[idx] = slot
+        if d_id:
+            slot["id"] = d_id
+        if d_name:
+            slot["name"] = d_name
+        arg_delta = getattr(fn, "arguments", None) if fn is not None else None
+        if arg_delta:
+            slot["arguments"] += arg_delta
+        return slot
+
+    def __bool__(self) -> bool:
+        return bool(self._slots)
+
+    def calls(self) -> list[dict[str, Any]]:
+        """Finished calls in arrival order, each with valid-JSON ``arguments``.
+
+        A slot whose arguments still hold several concatenated JSON objects
+        (no ids to tell the calls apart) is split into one call per object.
+        Arguments that cannot be parsed at all become ``{}`` and the call is
+        flagged ``malformed`` so the caller can report it to the model.
+        """
+        out: list[dict[str, Any]] = []
+        for slot in self._slots:
+            raw = (slot["arguments"] or "").strip()
+            objs: list[str] = []
+            malformed = False
+            if not raw:
+                objs = ["{}"]
+            else:
+                decoder = json.JSONDecoder()
+                pos = 0
+                try:
+                    while pos < len(raw):
+                        obj, end = decoder.raw_decode(raw, pos)
+                        if not isinstance(obj, dict):
+                            raise ValueError("tool arguments must be an object")
+                        objs.append(json.dumps(obj, ensure_ascii=False))
+                        pos = end
+                        while pos < len(raw) and raw[pos].isspace():
+                            pos += 1
+                except ValueError:
+                    objs, malformed = ["{}"], True
+            for n, args in enumerate(objs):
+                base_id = slot["id"] or f"call_{len(out)}"
+                call = {
+                    "id": base_id if n == 0 else f"{base_id}_{n}",
+                    "name": slot["name"],
+                    "arguments": args,
+                }
+                if malformed:
+                    call["malformed"] = True
+                out.append(call)
+        return out
+
+
 def _source_table_matches_catalog_entry(
     source_table: str,
     catalog_entry: dict[str, Any],

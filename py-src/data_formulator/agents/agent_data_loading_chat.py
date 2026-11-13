@@ -19,7 +19,7 @@ import re
 import pandas as pd
 
 from data_formulator.agent_config import reasoning_effort_for
-from data_formulator.agents.agent_utils import accumulate_reasoning_content
+from data_formulator.agents.agent_utils import ToolCallAccumulator, accumulate_reasoning_content
 from data_formulator.datalake.parquet_utils import df_to_safe_records
 
 logger = logging.getLogger(__name__)
@@ -901,7 +901,7 @@ class DataLoadingAgent:
                 return
 
             # Accumulate streaming response
-            tool_calls_acc = {}  # id -> {name, arguments_str}
+            tool_calls_acc = ToolCallAccumulator()
             current_text = []
             accumulated_reasoning = None
             finish_reason = None
@@ -927,19 +927,7 @@ class DataLoadingAgent:
                 # Accumulate tool calls
                 if hasattr(delta, 'tool_calls') and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": getattr(tc_delta, 'id', None) or f"call_{idx}",
-                                "name": "",
-                                "arguments": "",
-                            }
-                        if hasattr(tc_delta, 'id') and tc_delta.id:
-                            tool_calls_acc[idx]["id"] = tc_delta.id
-                        if hasattr(tc_delta.function, 'name') and tc_delta.function.name:
-                            tool_calls_acc[idx]["name"] = tc_delta.function.name
-                        if hasattr(tc_delta.function, 'arguments') and tc_delta.function.arguments:
-                            tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                        tool_calls_acc.add(tc_delta)
 
             # No tool calls -> the model produced its final turn (either text, or
             # an intentional silence after showing an interactive preview). Done.
@@ -989,8 +977,8 @@ class DataLoadingAgent:
             if accumulated_reasoning is not None:
                 assistant_msg["reasoning_content"] = accumulated_reasoning
             assistant_msg["tool_calls"] = []
-            for idx in sorted(tool_calls_acc.keys()):
-                tc = tool_calls_acc[idx]
+            tool_calls = tool_calls_acc.calls()
+            for tc in tool_calls:
                 assistant_msg["tool_calls"].append({
                     "id": tc["id"],
                     "type": "function",
@@ -1002,8 +990,7 @@ class DataLoadingAgent:
             llm_messages.append(assistant_msg)
 
             # Execute each tool call
-            for idx in sorted(tool_calls_acc.keys()):
-                tc = tool_calls_acc[idx]
+            for tc in tool_calls:
                 tool_name = tc["name"]
                 try:
                     tool_args = json.loads(tc["arguments"])
@@ -1019,7 +1006,13 @@ class DataLoadingAgent:
                 }
 
                 # Execute the tool
-                result = self._execute_tool(tool_name, tool_args)
+                if tc.get("malformed"):
+                    result = {"error": (
+                        f"The arguments for {tool_name} were not valid JSON. "
+                        "Call it again with a single JSON object."
+                    )}
+                else:
+                    result = self._execute_tool(tool_name, tool_args)
 
                 # Emit tool result event
                 yield {"type": "tool_result", "tool": tool_name, **result}

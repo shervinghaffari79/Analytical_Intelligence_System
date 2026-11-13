@@ -41,6 +41,7 @@ from typing import Any, Generator
 
 from data_formulator.agent_config import reasoning_effort_for
 from data_formulator.agents.agent_utils import (
+    ToolCallAccumulator,
     accumulate_reasoning_content,
     attach_reasoning_content,
     ensure_output_variable_in_code,
@@ -1972,8 +1973,7 @@ class AnalystAgent:
         content_parts: list[str] = []
         reasoning_acc: str | None = None
         finish_reason = "stop"
-        # idx -> {"id", "name", "arguments"}
-        tool_calls_acc: dict[int, dict[str, Any]] = {}
+        tool_calls_acc = ToolCallAccumulator()
         # idx -> {"active", "channel", "extractor", "announced"} for streaming actions
         streamers: dict[int, dict[str, Any]] = {}
 
@@ -1994,27 +1994,14 @@ class AnalystAgent:
                 content_parts.append(content)
 
             for tcd in getattr(delta, "tool_calls", None) or []:
-                idx = getattr(tcd, "index", 0) or 0
-                slot = tool_calls_acc.setdefault(
-                    idx, {"id": None, "name": "", "arguments": ""},
-                )
-                if getattr(tcd, "id", None):
-                    slot["id"] = tcd.id
-                fn = getattr(tcd, "function", None)
-                if fn is not None:
-                    if getattr(fn, "name", None):
-                        slot["name"] = fn.name
-                    arg_delta = getattr(fn, "arguments", None)
-                    if arg_delta:
-                        slot["arguments"] += arg_delta
+                slot = tool_calls_acc.add(tcd)
                 yield from self._forward_stream_delta(slot, streamers)
 
         # Reconstruct a non-streaming-shaped response for the loop.
         tool_call_objs: list[Any] = []
-        for i in sorted(tool_calls_acc):
-            tc = tool_calls_acc[i]
+        for tc in tool_calls_acc.calls():
             tool_call_objs.append(SimpleNamespace(
-                id=tc["id"] or f"call_{i}",
+                id=tc["id"],
                 type="function",
                 function=SimpleNamespace(name=tc["name"], arguments=tc["arguments"]),
             ))

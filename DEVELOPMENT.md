@@ -96,6 +96,22 @@ FLINT_CHART_LOCAL=../flint-chart/packages/flint-js/src yarn test
 Opt-in, advanced-dev only — leave it unset for normal work and CI, which use the installed
 package. The alias is wired in `vite.config.ts` and `vitest.config.ts`.
 
+## Conversational UI (`/chat`)
+
+A second, chat-first page lives in `src/chat/` and is served at
+[http://localhost:5567/chat](http://localhost:5567/chat). It talks to the same
+backend as the workspace app: the data-loading agent finds and loads tables,
+the analyst agent answers questions, and both stream their steps, text and
+charts as they are produced. Charts are rendered with the same engine
+(`flint-chart` → Vega-Lite), so every chart type the agents emit is supported.
+
+- `yarn start:chat` — dev server with hot reload (start the backend first).
+- `yarn build:chat` — build only this page into `py-src/data_formulator/dist/chat`.
+- `yarn build` builds the workspace app and then this page.
+
+It is built with its own config (`vite.chat.config.ts`) so the two pages never
+share chunks.
+
 ## Build for Production
 
 - **Build the frontend and then the backend**

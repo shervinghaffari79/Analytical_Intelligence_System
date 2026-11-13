@@ -84,7 +84,9 @@
     "scripts": {
         "lint": "eslint -c eslint.config.js src/**/*.{ts,tsx} --fix",
         "start": "vite",
-        "build": "cross-env NODE_OPTIONS=--max-old-space-size=8192 ROLLUP_NATIVE=0 vite build",
+        "build": "cross-env NODE_OPTIONS=--max-old-space-size=8192 ROLLUP_NATIVE=0 vite build && cross-env NODE_OPTIONS=--max-old-space-size=8192 ROLLUP_NATIVE=0 vite build --config vite.chat.config.ts",
+        "build:chat": "cross-env NODE_OPTIONS=--max-old-space-size=8192 ROLLUP_NATIVE=0 vite build --config vite.chat.config.ts",
+        "start:chat": "vite --config vite.chat.config.ts --open /chat.html",
         "test": "vitest run",
         "test:watch": "vitest"
     },

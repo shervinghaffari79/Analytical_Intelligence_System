@@ -351,6 +351,13 @@ def index_alt(path):
     logger.info(app.static_folder)
     return send_from_directory(app.static_folder, "index.html")
 
+
+@app.route("/chat")
+@app.route("/chat/")
+def chat_ui():
+    """Conversational UI (a second page of the same frontend build)."""
+    return send_from_directory(os.path.join(app.static_folder, "chat"), "chat.html")
+
 @app.route('/api/auth/info', methods=['GET'])
 def get_auth_info():
     """Return authentication configuration for the frontend.

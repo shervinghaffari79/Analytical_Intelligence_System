@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { vlAllTemplateDefs, vlAdaptChart, vlRecommendEncodings } from 'flint-chart';
+import { vlAllTemplateDefs, vlAdaptChart, vlGetTemplateChannels, vlRecommendEncodings } from 'flint-chart';
 import VegaChart from './VegaChart.jsx';
 import { fmtCell, fmtNum } from '../format.js';
 
@@ -36,8 +36,31 @@ function withJalaliAwareTypes(semantic, columns, rows) {
   return out;
 }
 
+const PIE_ALIASES = { x: 'color', category: 'color', label: 'color', y: 'size', theta: 'size', value: 'size', angle: 'size' };
+
+/* Models sometimes describe a chart with channels the template does not have
+ * (a pie given x/y instead of color/size). Keep what is valid, translate the
+ * usual aliases, and let the engine fill what is still missing. */
+function repairEncodings(type, encodings, rows, semantic) {
+  const channels = vlGetTemplateChannels(type) || [];
+  const out = {};
+  for (const [ch, v] of Object.entries(encodings || {})) {
+    if (!fieldOf(v)) continue;
+    if (channels.includes(ch)) out[ch] = v;
+    else if (type === 'Pie Chart' && PIE_ALIASES[ch] && !out[PIE_ALIASES[ch]] && !(encodings || {})[PIE_ALIASES[ch]]) out[PIE_ALIASES[ch]] = v;
+  }
+  const required = type === 'Pie Chart' ? ['color', 'size'] : [];
+  if (Object.keys(out).length === 0 || required.some(ch => !out[ch])) {
+    let rec = {};
+    try { rec = vlRecommendEncodings(type, rows, semantic || {}) || {}; } catch { rec = {}; }
+    const used = new Set(Object.values(out).map(fieldOf));
+    for (const [ch, f] of Object.entries(rec)) if (!out[ch] && f && !used.has(fieldOf(f))) out[ch] = f;
+  }
+  return out;
+}
+
 function normalizeType(type, encodings, rows, semantic) {
-  if (ALL_TYPES.includes(type)) return { type, encodings };
+  if (ALL_TYPES.includes(type)) return { type, encodings: repairEncodings(type, encodings, rows, semantic) };
   // "Auto" or an unknown name: let the engine pick fields for a sensible default.
   const fallback = 'Bar Chart';
   try { return { type: fallback, encodings: vlRecommendEncodings(fallback, rows, semantic || {}) }; } catch { return { type: fallback, encodings }; }

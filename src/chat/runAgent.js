@@ -100,6 +100,7 @@ function actionBlocks(actions, seen) {
     if (seen.has(key)) continue; // the same action arrives in tool_result and in the final `actions` event
     seen.add(key);
     if (a.type === 'load_plan') {
+      if (!(a.candidates || []).length) continue; // a plan with nothing to load is not worth a card
       out.push({
         type: 'load_plan', status: 'pending', reasoning: a.reasoning || '',
         candidates: (a.candidates || []).map(c => ({
@@ -364,7 +365,9 @@ export async function importLoadPlan(candidates, onProgress) {
     onProgress && onProgress(c, 'loading');
     const data = await api(URLS.IMPORT_DATA, {
       connector_id: c.sourceId, source_table: c.sourceTable,
-      table_name: String(c.displayName || c.tableKey).split('.').pop(),
+      // Name the workspace table after the source table, not the agent's
+      // free-text display label (which may carry a description).
+      table_name: String(c.tableKey || c.sourceTable || c.displayName).split('.').pop(),
       import_options: {
         source_filters: c.filters || [],
         sort_columns: c.sortBy ? [c.sortBy] : undefined, sort_order: c.sortOrder,

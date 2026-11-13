@@ -54,6 +54,29 @@ _EMPTY_TURN_FALLBACK = (
     "ask me something more specific.)_"
 )
 
+# A turn that ends on an announced-but-not-taken step gets this many nudges.
+_MAX_STALL_NUDGES = 2
+_STALL_NOTICE = (
+    "(system notice) You ended your turn before finishing: you said what you "
+    "would do next (or said nothing) but did not call a tool. Continue now by "
+    "calling the tool. Once you know which tables are needed, call "
+    "propose_load_plan. Reply in plain text only if you genuinely need the "
+    "user to clarify something."
+)
+
+
+def _looks_unfinished(turn_text: str, *, used_tools: bool) -> bool:
+    """True when a tool-free turn reads as a step announced but not taken.
+
+    Language-independent signals only: the text ends with a colon or an
+    ellipsis ("Let me check the schema:" / «بیایید بررسی کنیم:»), or the model
+    went silent after it had already started calling tools.
+    """
+    if not turn_text:
+        return used_tools
+    return turn_text.rstrip("*_ \n\t").endswith((":", "：", "...", "…"))
+
+
 # Max live probe_data calls allowed per user turn (design 37 §7).
 PROBE_TURN_BUDGET = 20
 
@@ -867,6 +890,7 @@ class DataLoadingAgent:
 
     def _agentic_loop(self, llm_messages, collected_text, actions, max_iterations):
         """Inner loop extracted so stream_chat can wrap it in a SandboxSession."""
+        stall_nudges = 0
         for _iteration in range(max_iterations):
             # Call LLM with tool definitions
             try:
@@ -920,6 +944,28 @@ class DataLoadingAgent:
             # No tool calls -> the model produced its final turn (either text, or
             # an intentional silence after showing an interactive preview). Done.
             if not tool_calls_acc:
+                # ...unless the model stopped half-way. Small models often write
+                # "Let me inspect these tables:" and end the turn without the
+                # tool call, or go silent after a few lookups. Nothing is on
+                # screen yet, so tell it to carry on (bounded) instead of
+                # handing the user an unfinished turn.
+                turn_text = "".join(current_text).strip()
+                if (
+                    not actions
+                    and stall_nudges < _MAX_STALL_NUDGES
+                    and _iteration < max_iterations - 1
+                    and _looks_unfinished(turn_text, used_tools=_iteration > 0)
+                ):
+                    stall_nudges += 1
+                    logger.info("[DataLoadingChat] turn ended unfinished; nudging to continue")
+                    if turn_text:
+                        llm_messages.append({"role": "assistant", "content": turn_text})
+                        # Keep the announcement visually separate from what follows.
+                        collected_text.append("\n\n")
+                        yield {"type": "text_delta", "content": "\n\n"}
+                    llm_messages.append({"role": "user", "content": _STALL_NOTICE})
+                    continue
+
                 # ...unless nothing ever reached the user. A reasoning model can
                 # spend an entire turn in the reasoning channel and close with
                 # empty content, which lands here and ends the run with a blank
@@ -1006,7 +1052,9 @@ class DataLoadingAgent:
                 llm_messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": json.dumps(llm_result, default=str),
+                    # ensure_ascii=False: escaping non-Latin text as \uXXXX costs
+                    # ~6x the tokens and hides the values from the model.
+                    "content": json.dumps(llm_result, default=str, ensure_ascii=False),
                 })
 
             # Bound cumulative scratch growth after each round of tool calls —

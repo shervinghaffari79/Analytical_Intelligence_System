@@ -110,6 +110,7 @@ function actionBlocks(actions, seen) {
         })),
       });
     } else if (a.type === 'preview_table') {
+      if (a.error) continue; // a failed preview is already reported in the trace step
       out.push({
         type: 'preview', status: a.error ? 'error' : 'pending', name: a.name, error: a.error || null,
         columns: a.columns || [], rows: a.sample_rows || [], totalRows: a.total_rows || 0, scratchPath: a.csv_scratch_path || '',

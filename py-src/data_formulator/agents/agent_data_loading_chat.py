@@ -1037,6 +1037,7 @@ class DataLoadingAgent:
             llm_messages.append(assistant_msg)
 
             # Execute each tool call
+            actions_before = len(actions)
             for tc in tool_calls:
                 tool_name = tc["name"]
                 explored = explored or tool_name in _DISCOVERY_TOOLS
@@ -1097,6 +1098,18 @@ class DataLoadingAgent:
                     # ~6x the tokens and hides the values from the model.
                     "content": json.dumps(llm_result, default=str, ensure_ascii=False),
                 })
+
+            # A load plan is a hand-off: the card now waits for the user to
+            # confirm, so there is nothing more for the model to do this turn.
+            # Letting it continue made small models keep exploring for minutes
+            # and stack failed preview attempts under a plan that was ready.
+            if any(
+                a.get("type") == "load_plan"
+                and any(not c.get("resolution_error") for c in a.get("candidates", []))
+                for a in actions[actions_before:]
+            ):
+                logger.info("[DataLoadingChat] load plan proposed; ending the turn")
+                return
 
             # Bound cumulative scratch growth after each round of tool calls —
             # LRU-evicts oldest files when the scratch dir exceeds its 1 GiB cap.

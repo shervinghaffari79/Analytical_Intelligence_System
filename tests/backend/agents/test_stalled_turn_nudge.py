@@ -160,3 +160,32 @@ def test_question_to_the_user_is_not_nudged_and_real_text_after_notice_is_shown(
     ])
     _, collected, _ = _run(client)
     assert "".join(collected).endswith("Done searching: the data is not available.")
+
+
+def test_turn_ends_once_a_usable_load_plan_is_proposed():
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("propose_load_plan"), finish="tool_calls")],
+        [_chunk("this extra turn must never be requested")],
+    ])
+    agent = DataLoadingAgent.__new__(DataLoadingAgent)
+    agent.client = client
+    agent.workspace = SimpleNamespace(prune_scratch=lambda: None)
+    agent._execute_tool = lambda name, args: {"actions": [{"type": "load_plan", "candidates": [
+        {"source_id": "mysql:x", "table_key": "db.t", "selected": True}]}]}
+    collected, actions = [], []
+    list(agent._agentic_loop([{"role": "user", "content": "sales"}], collected, actions, 6))
+    assert len(client.seen) == 1 and len(actions) == 1 and collected == []
+
+
+def test_plan_where_nothing_resolved_does_not_end_the_turn():
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("propose_load_plan"), finish="tool_calls")],
+        [_chunk("Which table did you mean?")],
+    ])
+    agent = DataLoadingAgent.__new__(DataLoadingAgent)
+    agent.client = client
+    agent.workspace = SimpleNamespace(prune_scratch=lambda: None)
+    agent._execute_tool = lambda name, args: {"actions": [{"type": "load_plan", "candidates": [
+        {"source_id": "mysql:x", "table_key": "db.nope", "resolution_error": "not found"}]}]}
+    list(agent._agentic_loop([{"role": "user", "content": "sales"}], [], [], 6))
+    assert len(client.seen) == 2

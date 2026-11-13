@@ -167,3 +167,34 @@ def test_describe_agent_parses_and_filters_model_output(source):
     assert d["columns"] == {"vaziat": "invoice status code"}
     # The prompt carries measured facts and inferred relationships.
     assert "Jalali" in client.prompt and "references tbl_moshtari.moshtari_id" in client.prompt
+
+
+def test_describe_agent_falls_back_and_retries_with_error_feedback(source):
+    from data_formulator.agents.agent_catalog_describe import CatalogDescribeAgent
+
+    loader, tables = source
+    store: dict = {}
+    cp.build_profiles(loader, tables, store)
+
+    replies = ["I think this is about invoices.",
+               '{"table": "Invoices.", "table_local": "", "keywords": [], "columns": {}}']
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def get_completion(self, messages, **kw):
+            self.calls.append((list(messages), kw))
+            if "response_format" in kw:
+                raise RuntimeError("provider does not support json_schema")
+            text = replies.pop(0)
+            msg = type("M", (), {"content": text})()
+            return type("R", (), {"choices": [type("C", (), {"message": msg})()]})()
+
+    client = _Client()
+    agent = CatalogDescribeAgent(client)
+    out = agent.describe(tables[1], store["tables"]["db.tbl_faktor"], [])
+    assert out == {"table": "Invoices.", "keywords": [], "columns": {}}
+    # 1 rejected schema call, then two plain calls; the schema is not retried.
+    assert ["response_format" in kw for _, kw in client.calls] == [True, False, False]
+    assert client.calls[-1][0][-1]["content"].startswith("Error: the reply did not contain a JSON object")

@@ -89,11 +89,65 @@ def _clean(value: Any, limit: int) -> str:
     return " ".join(str(value).split())[:limit] if isinstance(value, (str, int, float)) else ""
 
 
+def _response_schema(column_names: list[str]) -> dict[str, Any]:
+    """JSON schema for the reply; column keys are pinned to the real columns."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "table_description",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "table": {"type": "string"},
+                    "table_local": {"type": "string"},
+                    "keywords": {"type": "array", "items": {"type": "string"}},
+                    "columns": {
+                        "type": "object",
+                        "properties": {n: {"type": "string"} for n in column_names[:60]},
+                    },
+                },
+                "required": ["table", "table_local", "keywords", "columns"],
+            },
+        },
+    }
+
+
+def _validate(parsed: Any) -> str:
+    """Return an error message for the model, or '' when the reply is usable."""
+    if not isinstance(parsed, dict):
+        return "the reply did not contain a JSON object"
+    if not _clean(parsed.get("table"), 400) and not _clean(parsed.get("table_local"), 400):
+        return 'the "table" description is missing or empty'
+    if not isinstance(parsed.get("columns"), dict):
+        return '"columns" must be an object mapping column names to descriptions'
+    return ""
+
+
 class CatalogDescribeAgent:
     """Turn a table profile into a description via one LLM call."""
 
     def __init__(self, client: Any):
         self.client = client
+        self._schema_supported = True
+
+    def _complete(self, messages: list[dict[str, Any]], response_format: dict[str, Any]) -> str | None:
+        """One completion; schema-constrained when the provider supports it."""
+        if self._schema_supported:
+            try:
+                response = self.client.get_completion(messages=messages, response_format=response_format)
+                return response.choices[0].message.content or ""
+            except Exception as exc:
+                # Provider rejected the schema (or the call failed): remember
+                # and retry unconstrained rather than lose the table.
+                logger.info("Schema-constrained description failed (%s); using plain prompting", type(exc).__name__)
+                self._schema_supported = False
+        try:
+            response = self.client.get_completion(messages=messages)
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            logger.warning("Catalog description call failed: %s", type(exc).__name__)
+            logger.debug("Catalog description failure detail", exc_info=True)
+            return None
 
     def describe(
         self,
@@ -107,23 +161,32 @@ class CatalogDescribeAgent:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
-        try:
-            response = self.client.get_completion(messages=messages)
-            content = response.choices[0].message.content or ""
-        except Exception as exc:
-            logger.warning("Catalog description call failed: %s", type(exc).__name__)
-            logger.debug("Catalog description failure detail", exc_info=True)
-            return None
+        column_names = [c.get("name") for c in (table.get("metadata") or {}).get("columns", []) if c.get("name")]
 
-        parsed = next((o for o in extract_json_objects(content) if isinstance(o, dict)), None)
-        if not parsed:
-            logger.info("Catalog description: no JSON object in model reply")
+        # Structured output, the way LangChain's ProviderStrategy/ToolStrategy
+        # split does it: ask the provider to constrain the reply to a JSON
+        # schema when it can (Ollama, OpenAI, ...), fall back to plain prompting
+        # when it cannot, and on an invalid reply feed the error back once.
+        parsed: dict[str, Any] | None = None
+        error = ""
+        for attempt in range(2):
+            content = self._complete(messages, _response_schema(column_names))
+            if content is None:
+                return None
+            parsed = next((o for o in extract_json_objects(content) if isinstance(o, dict)), None)
+            error = _validate(parsed)
+            if not error:
+                break
+            logger.info("Catalog description attempt %d invalid: %s", attempt + 1, error)
+            messages = messages + [
+                {"role": "assistant", "content": content[:2000]},
+                {"role": "user", "content": f"Error: {error}. Reply again with one valid JSON object in the required shape."},
+            ]
+        if error or not parsed:
             return None
 
         en = _clean(parsed.get("table"), 400)
         local = _clean(parsed.get("table_local"), 400)
-        if not en and not local:
-            return None
         known = {c.get("name") for c in (table.get("metadata") or {}).get("columns", [])}
         raw_cols = parsed.get("columns") if isinstance(parsed.get("columns"), dict) else {}
         columns = {

@@ -65,6 +65,24 @@ _STALL_NOTICE = (
 )
 
 
+# Softer variant: the turn explored the catalog and then stopped with prose and
+# no plan. That is sometimes a complete answer ("what tables do we have?"), so
+# the model is given an explicit way to say so.
+_DONE_SENTINEL = "DONE"
+_NO_PLAN_NOTICE = (
+    "(system notice) You explored the data sources but have not proposed a load "
+    "plan. If the user wants data loaded or analyzed and you have identified the "
+    "tables, call propose_load_plan now. If you still need to look (another "
+    "source, another table), call the next tool. If your previous message "
+    f"already fully answers the user, reply with exactly: {_DONE_SENTINEL}"
+)
+_DISCOVERY_TOOLS = frozenset({"find_data", "list_data", "describe_data", "probe_data"})
+
+
+def _ends_with_question(turn_text: str) -> bool:
+    return turn_text.rstrip("*_ \n\t").endswith(("?", "؟", "？"))
+
+
 def _looks_unfinished(turn_text: str, *, used_tools: bool) -> bool:
     """True when a tool-free turn reads as a step announced but not taken.
 
@@ -891,6 +909,9 @@ class DataLoadingAgent:
     def _agentic_loop(self, llm_messages, collected_text, actions, max_iterations):
         """Inner loop extracted so stream_chat can wrap it in a SandboxSession."""
         stall_nudges = 0
+        explored = False       # a catalog discovery tool ran this turn
+        awaiting_done = False  # last prompt offered the DONE exit
+        soft_nudged = False
         for _iteration in range(max_iterations):
             # Call LLM with tool definitions
             try:
@@ -903,6 +924,7 @@ class DataLoadingAgent:
             # Accumulate streaming response
             tool_calls_acc = ToolCallAccumulator()
             current_text = []
+            held = ""  # text withheld while a DONE sentinel is still possible
             accumulated_reasoning = None
             finish_reason = None
 
@@ -920,14 +942,29 @@ class DataLoadingAgent:
 
                 # Stream text tokens
                 if hasattr(delta, 'content') and delta.content:
-                    collected_text.append(delta.content)
                     current_text.append(delta.content)
-                    yield {"type": "text_delta", "content": delta.content}
+                    if awaiting_done and held is not None:
+                        # Hold the first few characters back: if the reply is
+                        # just the DONE sentinel it must not reach the user.
+                        held += delta.content
+                        if len(held.strip()) <= len(_DONE_SENTINEL) + 2 and _DONE_SENTINEL.startswith(held.strip(" .\n*`\"'")[:len(_DONE_SENTINEL)]):
+                            continue
+                        text_out, held = held, None
+                    else:
+                        text_out = delta.content
+                    collected_text.append(text_out)
+                    yield {"type": "text_delta", "content": text_out}
 
                 # Accumulate tool calls
                 if hasattr(delta, 'tool_calls') and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         tool_calls_acc.add(tc_delta)
+
+            if awaiting_done and held and held.strip(" .\n*`\"'") != _DONE_SENTINEL:
+                collected_text.append(held)
+                yield {"type": "text_delta", "content": held}
+            if tool_calls_acc:
+                awaiting_done = False
 
             # No tool calls -> the model produced its final turn (either text, or
             # an intentional silence after showing an interactive preview). Done.
@@ -938,20 +975,30 @@ class DataLoadingAgent:
                 # screen yet, so tell it to carry on (bounded) instead of
                 # handing the user an unfinished turn.
                 turn_text = "".join(current_text).strip()
-                if (
+                if awaiting_done and turn_text.strip(" .\n*`\"'") == _DONE_SENTINEL:
+                    return  # the model confirmed its earlier answer was complete
+                can_nudge = (
                     not actions
                     and stall_nudges < _MAX_STALL_NUDGES
                     and _iteration < max_iterations - 1
-                    and _looks_unfinished(turn_text, used_tools=_iteration > 0)
-                ):
+                )
+                notice = None
+                if can_nudge and _looks_unfinished(turn_text, used_tools=_iteration > 0):
+                    notice = _STALL_NOTICE
+                elif (can_nudge and explored and not soft_nudged and turn_text
+                      and not _ends_with_question(turn_text)):
+                    notice = _NO_PLAN_NOTICE
+                    soft_nudged = True  # asked once; a second prose reply stands
+                if notice:
                     stall_nudges += 1
-                    logger.info("[DataLoadingChat] turn ended unfinished; nudging to continue")
+                    awaiting_done = notice is _NO_PLAN_NOTICE
+                    logger.info("[DataLoadingChat] turn ended without a plan; nudging to continue")
                     if turn_text:
                         llm_messages.append({"role": "assistant", "content": turn_text})
                         # Keep the announcement visually separate from what follows.
                         collected_text.append("\n\n")
                         yield {"type": "text_delta", "content": "\n\n"}
-                    llm_messages.append({"role": "user", "content": _STALL_NOTICE})
+                    llm_messages.append({"role": "user", "content": notice})
                     continue
 
                 # ...unless nothing ever reached the user. A reasoning model can
@@ -992,6 +1039,7 @@ class DataLoadingAgent:
             # Execute each tool call
             for tc in tool_calls:
                 tool_name = tc["name"]
+                explored = explored or tool_name in _DISCOVERY_TOOLS
                 try:
                     tool_args = json.loads(tc["arguments"])
                 except json.JSONDecodeError:

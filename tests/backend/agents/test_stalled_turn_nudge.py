@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from data_formulator.agents.agent_data_loading_chat import (
     _MAX_STALL_NUDGES,
+    _NO_PLAN_NOTICE,
     _STALL_NOTICE,
     DataLoadingAgent,
     _looks_unfinished,
@@ -118,3 +119,44 @@ def test_tool_results_keep_non_ascii_text_readable_for_the_model():
     list(agent._agentic_loop([{"role": "user", "content": "x"}], [], [], 4))
     tool_msg = client.seen[1][-1]
     assert tool_msg["role"] == "tool" and "کرج" in tool_msg["content"] and "\\u" not in tool_msg["content"]
+
+
+def test_exploring_then_prose_without_plan_gets_one_more_chance():
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("list_data"), finish="tool_calls")],
+        [_chunk("I found tbl_faktor and tbl_moshtari, which hold the sales.")],   # no plan
+        [_chunk(tool_calls=_tool_call("propose_load_plan"), finish="tool_calls")],
+        [_chunk("Plan ready.")],
+    ])
+    _, _, actions = _run(client)
+    assert [a["type"] for a in actions] == ["load_plan"]
+    assert client.seen[2][-1] == {"role": "user", "content": _NO_PLAN_NOTICE}
+
+
+def test_done_sentinel_ends_quietly_and_never_reaches_the_user():
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("list_data"), finish="tool_calls")],
+        [_chunk("The source has 26 tables: invoices, customers and stock.")],
+        [_chunk("DO"), _chunk("NE")],
+    ])
+    events, collected, actions = _run(client)
+    text = "".join(collected)
+    assert "DONE" not in text and text.startswith("The source has 26 tables")
+    assert not actions and len(client.seen) == 3
+
+
+def test_question_to_the_user_is_not_nudged_and_real_text_after_notice_is_shown():
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("list_data"), finish="tool_calls")],
+        [_chunk("Which year do you want?")],
+    ])
+    _run(client)
+    assert len(client.seen) == 2
+
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("find_data"), finish="tool_calls")],
+        [_chunk("Nothing matched in the connected sources.")],
+        [_chunk("Do"), _chunk("ne searching: the data is not available.")],
+    ])
+    _, collected, _ = _run(client)
+    assert "".join(collected).endswith("Done searching: the data is not available.")

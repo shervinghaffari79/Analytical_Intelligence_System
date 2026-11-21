@@ -68,8 +68,11 @@ def check_plan(kind, candidates):
 
 
 class Api:
-    def __init__(self, base, workspace):
+    def __init__(self, base, workspace, password=""):
         self.base, self.h = base, {"X-Workspace-Id": workspace, "Content-Type": "application/json"}
+        if password:  # servers started with DF_ACCESS_PASSWORD
+            import base64
+            self.h["Authorization"] = "Basic " + base64.b64encode(f"eval:{password}".encode()).decode()
 
     def call(self, path, payload=None, timeout=900):
         req = urllib.request.Request(self.base + path, headers=self.h,
@@ -125,10 +128,13 @@ def main():
     ap.add_argument("--describe", action="store_true", help="also generate LLM descriptions")
     ap.add_argument("--reset", action="store_true", help="drop stored profiles first (re-sync only)")
     ap.add_argument("--only", default="", help="comma-separated question ids")
+    ap.add_argument("--password", default="", help="DF_ACCESS_PASSWORD of the server, if set")
+    ap.add_argument("--schema", default="", help="schema file to apply to the source before the run")
+    ap.add_argument("--clear-schema", action="store_true", help="remove any schema file before the run")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
 
-    api = Api(a.base, a.workspace)
+    api = Api(a.base, a.workspace, a.password)
     model = api.json("/api/agent/list-global-models")["data"][0]
     params = {"host": a.db_host, "port": 3306, "user": a.db_user, "password": a.db_password, "database": a.database}
     cid = "mysql:pakhsh-eval"
@@ -138,6 +144,15 @@ def main():
         pass
     api.json("/api/connectors/connect", {"connector_id": cid, "params": params})
     api.json("/api/connectors/sync-catalog-metadata", {"connector_id": cid})
+
+    if a.clear_schema or a.schema:
+        api.json("/api/connectors/schema/delete", {"connector_id": cid})
+    if a.schema:
+        text = open(a.schema, encoding="utf-8").read()
+        out = api.json("/api/connectors/schema/save", {"connector_id": cid, "content": text, "filename": a.schema})["data"]
+        rep = out["report"]
+        print(f"schema applied: saved={out['saved']} matched {rep['matched_tables']}/{rep['tables_in_catalog']} "
+              f"errors={len(rep['errors'])} warnings={len(rep['warnings'])}", flush=True)
 
     if a.profile:
         t0 = time.time()
@@ -174,6 +189,9 @@ def main():
         if not r["plan"]:
             print("        no load plan; reply:", r["text"][:200].replace("\n", " "), flush=True)
     total = len(results)
+    if results:
+        print(f"mean tool calls per question: {sum(len(r['tools']) for r in results) / total:.1f} | "
+              f"mean seconds per question: {sum(r['seconds'] for r in results) / total:.0f}")
     print(f"\n== {a.label}: {passed}/{total} passed ==")
     if a.out:
         json.dump({"label": a.label, "passed": passed, "total": total, "results": results},

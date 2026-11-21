@@ -113,8 +113,13 @@ def _load_catalog_raw(workspace_root: Path | str, source_id: str) -> dict[str, A
     # descriptions). Kept in a separate store so a re-sync never discards it.
     try:
         from data_formulator.datalake.catalog_profile import apply_profiles, load_profiles
+        from data_formulator.datalake.catalog_schema import apply_schema, load_schema
         if isinstance(raw, dict) and isinstance(raw.get("tables"), list):
-            apply_profiles(raw["tables"], load_profiles(workspace_root, raw.get("source_id") or source_id))
+            sid = raw.get("source_id") or source_id
+            apply_profiles(raw["tables"], load_profiles(workspace_root, sid))
+            # The user's schema file is applied last so a person's words always win
+            # over measured and generated metadata.
+            apply_schema(raw["tables"], load_schema(workspace_root, sid))
     except Exception:
         logger.debug("Failed to overlay catalog profile for %s", source_id, exc_info=True)
     return raw
@@ -273,7 +278,7 @@ def _search_python(
         source_hits: list[dict[str, Any]] = []
         for t in tables:
             tname = t.get("name", "")
-            if tname in exclude:
+            if tname in exclude or (t.get("metadata") or {}).get("ignored"):
                 continue
 
             # Path-prefix filter
@@ -306,6 +311,13 @@ def _search_python(
                     "generated_description" if meta.get("description_source") == "auto"
                     else "source_description"
                 )
+
+            # Row grain and notes written in a schema file ("one row per invoice line").
+            if "description" in match_fields and any(
+                _matches(str(meta.get(k) or "")) for k in ("grain", "notes")
+            ):
+                score += 3
+                match_reasons.append("schema_notes")
 
             # Generated search keywords (bilingual) for undocumented tables.
             if "description" in match_fields:
@@ -434,7 +446,7 @@ def list_sources_summary(
         raw = _load_catalog_raw(workspace_root, sid)
         if not raw:
             continue
-        tables = raw.get("tables", []) or []
+        tables = [t for t in (raw.get("tables", []) or []) if not (t.get("metadata") or {}).get("ignored")]
         is_hier = False
         for t in tables:
             p = t.get("path")
@@ -501,6 +513,8 @@ def list_path_children(
     leaf_tables: list[dict[str, Any]] = []
 
     for t in tables_raw:
+        if (t.get("metadata") or {}).get("ignored"):
+            continue
         tname = t.get("name", "")
         tpath = t.get("path") or []
         if not isinstance(tpath, list):

@@ -379,3 +379,12 @@ pre.step-detail{white-space:pre-wrap;word-break:break-word;font-family:ui-monosp
 @media (max-width:760px){.hint-desktop{display:none}.modal{max-height:92dvh}}
 
 .msg-note{margin:6px 0 10px;font-size:12px;color:var(--muted);display:flex;gap:6px;align-items:center;padding-inline-start:4px}
+
+.schema-box{flex-basis:100%;border-top:1px dashed var(--border);margin-top:8px;padding-top:10px;font-size:12.5px}
+.schema-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.schema-status{color:var(--muted2);font-size:12px}.schema-status.ok{color:var(--green);font-weight:600}
+.schema-help{color:var(--muted);margin:6px 0 2px;line-height:1.5}.schema-help code{background:var(--bg2);border-radius:4px;padding:0 4px}
+.schema-report{margin-top:8px}.schema-ok{color:var(--green);font-weight:600}.schema-bad{color:#991B1B;font-weight:600}
+.schema-issues{margin:6px 0;padding-inline-start:18px;line-height:1.5}.schema-issues.err{color:#991B1B}.schema-issues.warn{color:#92400E}
+.schema-issues code{background:var(--bg2);border-radius:4px;padding:0 4px;color:var(--text)}
+.btn.on{border-color:var(--primary);color:var(--primary)}

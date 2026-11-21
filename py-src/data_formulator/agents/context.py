@@ -471,10 +471,18 @@ def handle_read_catalog_metadata(
 
     table_desc = meta.get("description", "") or meta.get("source_description", "")
     if table_desc:
-        label = "Description (auto-generated from data)" if meta.get("description_source") == "auto" else "Description"
+        label = {"auto": "Description (auto-generated from data)",
+                 "schema": "Description (from the user's schema file — authoritative)"}.get(
+            meta.get("description_source"), "Description")
         lines.append(f"\n{label}: {table_desc}")
+    if meta.get("grain"):
+        lines.append(f"Grain (one row is): {meta['grain']}")
+    if meta.get("notes"):
+        lines.append(f"Notes: {meta['notes']}")
     if meta.get("relationships"):
-        lines.append("\nRelationships (inferred from data; none are declared):")
+        declared = any("(declared)" in r for r in meta["relationships"])
+        lines.append("\nRelationships (" + ("declared in the user's schema where marked; the rest inferred from data" if declared
+                                              else "inferred from data; none are declared") + "):")
         lines.extend(f"  - {r}" for r in meta["relationships"][:20])
 
     columns = meta.get("columns", [])

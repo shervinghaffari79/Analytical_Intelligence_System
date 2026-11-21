@@ -2160,6 +2160,168 @@ def connector_profile_catalog():
         classify_and_raise_connector_error(e, operation="catalog")
 
 
+# ---------------------------------------------------------------------------
+# User-provided schema file (see datalake/catalog_schema.py, docs/schema-file.md)
+# ---------------------------------------------------------------------------
+
+def _read_schema_upload() -> tuple[str, str]:
+    """The uploaded schema text and its file name (multipart ``file`` or JSON ``content``)."""
+    from data_formulator.datalake.catalog_schema import MAX_SCHEMA_BYTES
+
+    if "file" in request.files:
+        f = request.files["file"]
+        raw = f.read(MAX_SCHEMA_BYTES + 1)
+        name = f.filename or ""
+    else:
+        body = request.get_json(silent=True) or {}
+        content = body.get("content")
+        if not isinstance(content, str):
+            raise AppError(ErrorCode.INVALID_REQUEST, "Send the schema as a file upload or as `content`.")
+        raw, name = content.encode("utf-8"), str(body.get("filename") or "")
+    if len(raw) > MAX_SCHEMA_BYTES:
+        raise AppError(ErrorCode.INVALID_REQUEST, "The schema file is larger than 2 MB.")
+    for enc in ("utf-8-sig", "utf-16", "cp1256"):  # Excel exports of Persian CSVs are often cp1256
+        try:
+            return raw.decode(enc), name
+        except UnicodeError:
+            continue
+    raise AppError(ErrorCode.INVALID_REQUEST, "The file is not valid text (UTF-8 expected).")
+
+
+def _schema_catalog(source) -> tuple[Path, list[dict[str, Any]]]:
+    """The source's catalog (synced on demand) and the user home it lives in."""
+    from data_formulator.datalake.catalog_cache import load_catalog, save_catalog
+    from data_formulator.datalake.workspace import get_user_home
+
+    user_home = get_user_home(source._get_identity())
+    tables = load_catalog(user_home, source._source_id)
+    if not tables:
+        loader = source._require_loader()
+        tables = loader.sync_catalog_metadata()
+        save_catalog(user_home, source._source_id, tables)
+        tables = load_catalog(user_home, source._source_id) or tables
+    return Path(user_home), tables
+
+
+def _schema_report(schema: dict[str, Any], file_issues: list[dict], tables: list[dict]) -> dict[str, Any]:
+    from data_formulator.datalake.catalog_schema import check_against_catalog
+
+    checked = check_against_catalog(schema, tables)
+    issues = [*file_issues, *checked.pop("issues")]
+    return {
+        "ok": not any(i["level"] == "error" for i in issues),
+        "errors": [i for i in issues if i["level"] == "error"],
+        "warnings": [i for i in issues if i["level"] == "warning"],
+        **checked,
+    }
+
+
+@connectors_bp.route("/api/connectors/schema/validate", methods=["POST"])
+def connector_schema_validate():
+    """Check a schema file against the connected source without saving it."""
+    from data_formulator.datalake.catalog_schema import SchemaFileError, normalize_schema, parse_schema_text
+
+    source = _resolve_connector(request.form.to_dict() if request.files else (request.get_json(silent=True) or {}))
+    try:
+        text, filename = _read_schema_upload()
+        try:
+            schema, file_issues = normalize_schema(parse_schema_text(text, filename))
+        except SchemaFileError as exc:
+            return json_ok({"ok": False, "errors": [{"level": "error", "path": "", "message": str(exc)}], "warnings": []})
+        _, tables = _schema_catalog(source)
+        return json_ok(_schema_report(schema, file_issues, tables))
+    except AppError:
+        raise
+    except Exception as e:
+        classify_and_raise_connector_error(e, operation="catalog")
+
+
+@connectors_bp.route("/api/connectors/schema/save", methods=["POST"])
+def connector_schema_save():
+    """Validate and store a schema file for a source. Errors prevent saving; warnings do not."""
+    from data_formulator.datalake.catalog_schema import (
+        SchemaFileError, apply_schema, normalize_schema, parse_schema_text, save_schema,
+    )
+
+    source = _resolve_connector(request.form.to_dict() if request.files else (request.get_json(silent=True) or {}))
+    try:
+        text, filename = _read_schema_upload()
+        try:
+            schema, file_issues = normalize_schema(parse_schema_text(text, filename))
+        except SchemaFileError as exc:
+            return json_ok({"saved": False, "report": {"ok": False, "errors": [{"level": "error", "path": "", "message": str(exc)}], "warnings": []}})
+        user_home, tables = _schema_catalog(source)
+        report = _schema_report(schema, file_issues, tables)
+        if not report["ok"] or report["matched_tables"] == 0:
+            if report["ok"]:
+                report["ok"] = False
+                report["errors"].append({"level": "error", "path": "tables",
+                                         "message": "None of the tables in the file exist in this source, so nothing would be documented."})
+            return json_ok({"saved": False, "report": report})
+        save_schema(user_home, source._source_id, schema, filename=filename)
+        return json_ok({"saved": True, "report": report})
+    except AppError:
+        raise
+    except Exception as e:
+        classify_and_raise_connector_error(e, operation="catalog")
+
+
+@connectors_bp.route("/api/connectors/schema/get", methods=["POST"])
+def connector_schema_get():
+    """Whether a source has a schema file, and how well it covers the current catalog."""
+    from data_formulator.datalake.catalog_schema import load_schema_record
+
+    data = request.get_json() or {}
+    source = _resolve_connector(data)
+    try:
+        user_home, tables = _schema_catalog(source)
+        rec = load_schema_record(user_home, source._source_id)
+        if not rec:
+            return json_ok({"present": False, "tables_in_catalog": len(tables)})
+        schema = rec["schema"]
+        report = _schema_report(schema, [], tables)
+        return json_ok({
+            "present": True, "filename": rec.get("filename", ""), "saved_at": rec.get("saved_at"),
+            "name": schema.get("name", ""), "rules": len(schema.get("rules", [])),
+            "glossary": len(schema.get("glossary", [])), "examples": len(schema.get("examples", [])),
+            "report": report,
+        })
+    except AppError:
+        raise
+    except Exception as e:
+        classify_and_raise_connector_error(e, operation="catalog")
+
+
+@connectors_bp.route("/api/connectors/schema/delete", methods=["POST"])
+def connector_schema_delete():
+    from data_formulator.datalake.catalog_schema import delete_schema
+    from data_formulator.datalake.workspace import get_user_home
+
+    source = _resolve_connector(request.get_json() or {})
+    removed = delete_schema(get_user_home(source._get_identity()), source._source_id)
+    return json_ok({"removed": removed})
+
+
+@connectors_bp.route("/api/connectors/schema/template", methods=["POST"])
+def connector_schema_template():
+    """A YAML file to fill in, pre-filled from the source's current metadata."""
+    from data_formulator.datalake.catalog_schema import build_template, load_schema
+
+    source = _resolve_connector(request.get_json() or {})
+    try:
+        user_home, tables = _schema_catalog(source)
+        content = build_template(
+            tables, source_label=getattr(source, "_display_name", "") or source._source_id,
+            existing=load_schema(user_home, source._source_id),
+        )
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", source._source_id).strip("_") or "source"
+        return json_ok({"filename": f"{safe}.schema.yaml", "content": content})
+    except AppError:
+        raise
+    except Exception as e:
+        classify_and_raise_connector_error(e, operation="catalog")
+
+
 @connectors_bp.route("/api/connectors/search-catalog", methods=["POST"])
 def connector_search_catalog():
     """Search a connected connector's catalog without reconnecting."""

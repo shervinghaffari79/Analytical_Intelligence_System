@@ -1,0 +1,194 @@
+# Example schema file for the Persian test database (tools/persian_testdb/make_db.py).
+# This is what a database owner would write once; the agents then skip crawling it.
+version: 1
+name: سامانه پخش مواد غذایی
+language: fa
+description: >-
+  پایگاه داده عملیاتی یک شرکت پخش مواد غذایی: فروش (فاکتور)، مشتریان، کالاها، انبار، خرید از
+  تأمین‌کنندگان، مرجوعی، هزینه‌ها و حقوق. داده‌ها از فروردین ۱۴۰۱ تا شهریور ۱۴۰۳ است.
+rules:
+  - "همه مبالغ به ریال هستند؛ برای نمایش به تومان تقسیم بر ۱۰ کنید."
+  - "تاریخ‌ها شمسی‌اند. در ستون‌های متنی به شکل YYYY/MM/DD (مثل 1402/03/14) و در ستون‌های عددی به شکل YYYYMMDD ذخیره شده‌اند؛ هرگز با تاریخ میلادی مقایسه نکنید."
+  - "فاکتورهای لغو شده (vaziat=3) و مرجوع شده (vaziat=4) را در تحلیل فروش لحاظ نکنید مگر اینکه کاربر بخواهد."
+  - "معنی کدها در جدول tbl_code_paye است (ستون noe نام گروه کد را مشخص می‌کند)."
+  - "نام شهر و نام‌ها گاهی با «ي» و «ك» عربی ذخیره شده‌اند؛ جستجوی متنی هر دو شکل را پیدا می‌کند."
+glossary:
+  - {term: مشتری, aka: [customer, خریدار], maps_to: [tbl_moshtari], meaning: "فروشگاه یا فردی که از شرکت خرید می‌کند"}
+  - {term: فروش, aka: [sales, revenue, درآمد فروش], maps_to: [tbl_faktor, tbl_faktor_riz], meaning: "مجموع مبلغ فاکتورهای تأییدشده"}
+  - {term: کالا, aka: [product, محصول], maps_to: [tbl_kala]}
+  - {term: انبار, aka: [warehouse, موجودی, stock], maps_to: [tbl_anbar, tbl_mojodi, tbl_gardesh_anbar]}
+  - {term: ویزیت, aka: [visit, بازاریابی], maps_to: [t_prs01], meaning: "بازدید فروشنده از مشتری"}
+  - {term: چک, aka: [cheque, check], maps_to: [tbl_faktor], meaning: "روش پرداخت noe_pardakht=3"}
+examples:
+  - {question: "فروش سال ۱۴۰۲ به تفکیک شهر مشتری", tables: [tbl_faktor, tbl_moshtari, tbl_shahr], note: "faktor.moshtari_id → moshtari.shahr_id → shahr; فیلتر tarikh LIKE '1402/%'"}
+  - {question: "Which product categories sell the most?", tables: [tbl_faktor_riz, tbl_kala, tbl_goroh_kala], note: "faktor_riz.kala_id → kala.goroh_id → goroh_kala"}
+  - {question: "بازگشت کالا و دلیل آن", tables: [tbl_bargasht], note: "ستون elat کد دلیل است"}
+
+tables:
+  tbl_ostan: {description: "استان‌های کشور", grain: "یک ردیف برای هر استان"}
+  tbl_shahr:
+    description: "شهرهای کشور"
+    grain: "یک ردیف برای هر شهر"
+    columns: {ostan_id: {references: tbl_ostan.ostan_id}}
+  tbl_goroh_kala: {description: "گروه‌بندی کالاها (لبنیات، نوشیدنی، …)", aka: [category, دسته‌بندی کالا]}
+  tbl_tamin_konande:
+    description: "تأمین‌کنندگان (شرکت‌های تولیدکننده که از آن‌ها خرید می‌شود)"
+    aka: [supplier, فروشنده]
+    columns:
+      sherkat: "نام شرکت"
+      mohlat_pardakht: {description: "مهلت پرداخت", unit: روز}
+      shahr_id: {references: tbl_shahr.shahr_id}
+  tbl_kala:
+    description: "فهرست کالاها با قیمت خرید و فروش"
+    aka: [product, محصول]
+    grain: "یک ردیف برای هر کالا"
+    columns:
+      kala_name: "نام کالا و برند"
+      goroh_id: {description: "گروه کالا", references: tbl_goroh_kala.goroh_id}
+      tk_id: {description: "تأمین‌کننده", references: tbl_tamin_konande.tk_id}
+      gh_kharid: {description: "قیمت خرید", unit: ریال}
+      gh_forosh: {description: "قیمت فروش", unit: ریال}
+      faal: {description: "فعال بودن کالا", values: {0: غیرفعال, 1: فعال}}
+  tbl_code_paye:
+    description: "جدول کدهای پایه: معنی همهٔ کدهای عددی سامانه"
+    grain: "یک ردیف برای هر کد در هر گروه"
+    columns:
+      noe: "نام گروه کد (مثل vaziat_faktor)"
+      code: "مقدار کد"
+      sharh: "معنی کد"
+  tbl_moshtari:
+    description: "مشتریان (فروشگاه‌ها و افراد)"
+    aka: [customer, خریدار]
+    grain: "یک ردیف برای هر مشتری"
+    columns:
+      famil: "نام خانوادگی"
+      code_melli: {description: "کد ملی", type: national_id}
+      mobile: {description: "شمارهٔ همراه", type: iran_mobile}
+      shahr_id: {description: "شهر مشتری", references: tbl_shahr.shahr_id}
+      tarikh_ozviat: {description: "تاریخ عضویت", type: jalali_date}
+      jens: {description: "جنسیت", values: {م: مرد, ز: زن}}
+      noe: {description: "نوع مشتری", values: {1: مصرف‌کننده, 2: مغازه‌دار, 3: عمده‌فروش}, lookup: {table: tbl_code_paye, key: code, label: sharh, where: {noe: noe_moshtari}}}
+      etebar: {description: "سقف اعتبار", unit: ریال}
+  tbl_shobe:
+    description: "شعبه‌های شرکت"
+    columns:
+      shahr_id: {references: tbl_shahr.shahr_id}
+      tarikh_eftetah: {description: "تاریخ افتتاح", type: jalali_date_int}
+      metraj: {description: "متراژ", unit: "متر مربع"}
+  tbl_semat: {description: "سمت‌های شغلی"}
+  tbl_karmand:
+    description: "کارمندان"
+    columns:
+      semat_id: {references: tbl_semat.semat_id}
+      shobe_id: {references: tbl_shobe.shobe_id}
+      tarikh_estekhdam: {description: "تاریخ استخدام", type: jalali_date}
+      hoghogh_paye: {description: "حقوق پایه ماهانه", unit: ریال}
+      faal: {values: {0: ترک کار, 1: شاغل}}
+  tbl_faktor:
+    description: "فاکتورهای فروش (سرفصل فاکتور)؛ اقلام هر فاکتور در tbl_faktor_riz است"
+    aka: [invoice, فاکتور فروش, sales invoice]
+    grain: "یک ردیف برای هر فاکتور"
+    columns:
+      moshtari_id: {references: tbl_moshtari.moshtari_id}
+      shobe_id: {description: "شعبه صادرکننده", references: tbl_shobe.shobe_id}
+      karmand_id: {description: "فروشنده", references: tbl_karmand.karmand_id}
+      tarikh: {description: "تاریخ فاکتور", type: jalali_date}
+      saat: {description: "ساعت صدور", type: time}
+      jam_kol: {description: "جمع کل فاکتور", unit: ریال}
+      takhfif: {description: "تخفیف کل فاکتور", unit: ریال}
+      maliat: {description: "مالیات بر ارزش افزوده", unit: ریال}
+      vaziat: {description: "وضعیت فاکتور", values: {1: تایید شده, 2: در انتظار پرداخت, 3: لغو شده, 4: مرجوع شده}, lookup: {table: tbl_code_paye, key: code, label: sharh, where: {noe: vaziat_faktor}}}
+      noe_pardakht: {description: "روش پرداخت", values: {1: نقدی, 2: کارت‌خوان, 3: چک, 4: نسیه}, lookup: {table: tbl_code_paye, key: code, label: sharh, where: {noe: noe_pardakht}}}
+  tbl_faktor_riz:
+    description: "اقلام (ردیف‌های) فاکتورهای فروش"
+    aka: [invoice lines, ریز فاکتور]
+    grain: "یک ردیف برای هر کالا در هر فاکتور"
+    columns:
+      faktor_id: {references: tbl_faktor.faktor_id}
+      kala_id: {references: tbl_kala.kala_id}
+      tedad: "تعداد فروخته‌شده"
+      fi: {description: "قیمت واحد", unit: ریال}
+      takhfif_riz: {description: "تخفیف این ردیف", unit: ریال}
+  tbl_anbar:
+    description: "انبارها (انبار مرکزی و انبار هر شعبه)"
+    columns: {shobe_id: {references: tbl_shobe.shobe_id}, zarfiat: {description: "ظرفیت", unit: عدد}}
+  tbl_mojodi:
+    description: "موجودی فعلی هر کالا در هر انبار"
+    grain: "یک ردیف برای هر انبار و کالا"
+    columns:
+      anbar_id: {references: tbl_anbar.anbar_id}
+      kala_id: {references: tbl_kala.kala_id}
+      tedad: "تعداد موجود"
+      hadaghal: "حداقل موجودی مجاز؛ کمتر از آن یعنی نیاز به سفارش"
+      tarikh_beroz: {description: "تاریخ آخرین بروزرسانی", type: jalali_date_int}
+  tbl_gardesh_anbar:
+    description: "گردش انبار: ورود و خروج و انتقال کالا"
+    aka: [stock movements, ورود و خروج کالا]
+    grain: "یک ردیف برای هر حرکت کالا"
+    columns:
+      anbar_id: {references: tbl_anbar.anbar_id}
+      kala_id: {references: tbl_kala.kala_id}
+      noe: {description: "نوع حرکت", values: {1: ورود, 2: خروج, 3: انتقال, 4: ضایعات}, lookup: {table: tbl_code_paye, key: code, label: sharh, where: {noe: noe_gardesh}}}
+      tarikh: {description: "تاریخ حرکت", type: jalali_date_int}
+  tbl_kharid:
+    description: "فاکتورهای خرید از تأمین‌کنندگان"
+    aka: [purchases, خرید]
+    grain: "یک ردیف برای هر فاکتور خرید"
+    columns:
+      tk_id: {references: tbl_tamin_konande.tk_id}
+      anbar_id: {references: tbl_anbar.anbar_id}
+      tarikh: {type: jalali_date}
+      jam_kol: {unit: ریال}
+      tasvie: {description: "تسویه شده؟", values: {0: تسویه نشده, 1: تسویه شده}}
+  tbl_kharid_riz:
+    description: "اقلام فاکتورهای خرید"
+    columns: {kharid_id: {references: tbl_kharid.kharid_id}, kala_id: {references: tbl_kala.kala_id}, fi: {unit: ریال}}
+  tbl_bargasht:
+    description: "مرجوعی کالا از فاکتورهای فروش و دلیل برگشت"
+    aka: [returns, برگشت کالا]
+    grain: "یک ردیف برای هر کالای مرجوع‌شده"
+    columns:
+      faktor_id: {references: tbl_faktor.faktor_id}
+      kala_id: {references: tbl_kala.kala_id}
+      tarikh: {type: jalali_date}
+      elat: {description: "دلیل مرجوعی", values: {1: تاریخ گذشته, 2: آسیب‌دیدگی, 3: اشتباه در سفارش}, lookup: {table: tbl_code_paye, key: code, label: sharh, where: {noe: elat_bargasht}}}
+      mablagh: {description: "مبلغ مرجوعی", unit: ریال}
+  tbl_noe_hazine: {description: "انواع هزینه (اجاره، حقوق، حمل و نقل، …)"}
+  tbl_hazine:
+    description: "هزینه‌های شعبه‌ها"
+    aka: [expenses, هزینه]
+    grain: "یک ردیف برای هر هزینه"
+    columns:
+      shobe_id: {references: tbl_shobe.shobe_id}
+      noe_id: {description: "نوع هزینه", references: tbl_noe_hazine.noe_id}
+      mablagh: {unit: ریال}
+      tarikh: {type: jalali_date}
+  tbl_hoghogh:
+    description: "فیش حقوقی ماهانهٔ کارمندان"
+    aka: [salary, payroll, حقوق و دستمزد]
+    grain: "یک ردیف برای هر کارمند در هر ماه"
+    columns:
+      karmand_id: {references: tbl_karmand.karmand_id}
+      sal: {description: "سال شمسی", type: jalali_year}
+      mah: "ماه شمسی (۱ تا ۱۲)"
+      paye: {description: "حقوق پایه", unit: ریال}
+      ezafe_kar: {description: "اضافه‌کار", unit: ریال}
+      kosorat: {description: "کسورات", unit: ریال}
+      khales: {description: "خالص پرداختی", unit: ریال}
+  t_prs01:
+    description: "گزارش ویزیت فروشندگان از مشتریان"
+    aka: [visits, ویزیت, بازدید مشتری]
+    grain: "یک ردیف برای هر ویزیت"
+    columns:
+      f1: "شناسه ویزیت"
+      f2: {description: "فروشنده", references: tbl_karmand.karmand_id}
+      f3: {description: "مشتری ویزیت‌شده", references: tbl_moshtari.moshtari_id}
+      f4: {description: "تاریخ ویزیت", type: jalali_date}
+      f5: "کد نتیجهٔ ویزیت (۰ تا ۲)"
+      f6: "توضیح نتیجهٔ ویزیت"
+  tbl_faktor_old_1399:
+    description: "بایگانی فاکتورهای سال ۱۳۹۹ با همان ساختار tbl_faktor؛ فقط برای تحلیل سال ۱۳۹۹"
+    notes: "برای سال‌های ۱۴۰۱ به بعد از tbl_faktor استفاده کنید."
+  tbl_tanzimat: {description: "تنظیمات سامانه (نرخ مالیات، نام شرکت، …)"}
+  tmp_imp_kala: {ignore: true, description: "جدول موقت برای ورود کالا؛ بی‌اهمیت"}
+  tbl_log: {ignore: true, description: "لاگ عملیات کاربران؛ بی‌اهمیت برای تحلیل"}

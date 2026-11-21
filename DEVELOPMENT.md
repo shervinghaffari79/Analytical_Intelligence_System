@@ -112,6 +112,13 @@ charts as they are produced. Charts are rendered with the same engine
 It is built with its own config (`vite.chat.config.ts`) so the two pages never
 share chunks.
 
+## Schema files for new databases
+
+Instead of letting the agents explore a new database table by table, give them a schema file
+(YAML, JSON or a CSV data dictionary): descriptions, value meanings, units, relationships, rules and
+tables to ignore. Data panel → *Schema file* → download a pre-filled template, fill it in, upload.
+See [docs/schema-file.md](docs/schema-file.md).
+
 ## Serving on port 5000 / on the internet
 
 By default the app listens on `127.0.0.1:5567`. To serve it on port 5000 on every network

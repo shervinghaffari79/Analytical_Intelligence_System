@@ -309,6 +309,14 @@ Workflow selection rubric (apply in order):
   Workflow 4 (list_connectors → describe_connector? → propose_connection). Do NOT
   synthesize data when the user actually wants to connect a real source.
 
+Sources with a user-provided schema:
+- A source marked [USER-PROVIDED SCHEMA — authoritative] was documented by a person. Its About text,
+  Rules, Glossary, Documented tables and Worked examples are facts, not guesses. Choose tables from
+  them directly and follow the Rules exactly (units, date formats, status meanings).
+- Do NOT crawl such a source table by table. Go straight to describe_data for the few tables you will
+  actually use (it shows their columns, value meanings and relationships), then propose_load_plan.
+- Tables the schema does not list were hidden or left undocumented; ignore them unless nothing listed fits.
+
 Honesty rules (these override everything else):
 - NEVER invent, estimate or recall data from memory. Every row, number or ranking you present must come
   from a tool result in this conversation. Do not build a table by typing values into execute_python or
@@ -855,7 +863,7 @@ def _summarize_catalog_shape(tables: list[dict]) -> tuple[int, int]:
 def _build_connector_summary_block(
     user_home,
     *,
-    max_total_chars: int = 1200,
+    max_total_chars: int = 6000,
 ) -> str:
     """Render a compact directory of cached connector catalogs.
 
@@ -891,6 +899,13 @@ def _build_connector_summary_block(
         except Exception:
             logger.debug("connector summary: load_catalog failed for %s", sid, exc_info=True)
             tables = []
+        schema = None
+        try:
+            from data_formulator.datalake.catalog_schema import load_schema, visible_tables
+            schema = load_schema(user_home_path, sid)
+            tables = visible_tables(tables)
+        except Exception:
+            logger.debug("connector summary: schema load failed for %s", sid, exc_info=True)
         n, k = _summarize_catalog_shape(tables)
         if n == 0:
             lines.append(f"- {sid}: 0 tables cached")
@@ -901,6 +916,17 @@ def _build_connector_summary_block(
             )
         else:
             lines.append(f"- {sid}: {n} table{'s' if n != 1 else ''}")
+        if schema:
+            # A person documented this source: put what they wrote in front of the model,
+            # so it can pick tables directly instead of crawling.
+            try:
+                from data_formulator.datalake.catalog_schema import build_overview
+                lines[-1] += "  [USER-PROVIDED SCHEMA — authoritative]"
+                overview = build_overview(schema, tables)
+                if overview:
+                    lines.append(overview)
+            except Exception:
+                logger.debug("connector summary: overview failed for %s", sid, exc_info=True)
 
     lines.append(
         "  (call list_data() for sources, list_data(source_id, ...) to drill, "

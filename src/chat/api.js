@@ -143,4 +143,9 @@ export const URLS = {
   SYNC_CATALOG: '/api/connectors/sync-catalog-metadata',
   PROFILE_CATALOG: '/api/connectors/profile-catalog',
   IMPORT_DATA: '/api/connectors/import-data',
+  SCHEMA_GET: '/api/connectors/schema/get',
+  SCHEMA_VALIDATE: '/api/connectors/schema/validate',
+  SCHEMA_SAVE: '/api/connectors/schema/save',
+  SCHEMA_DELETE: '/api/connectors/schema/delete',
+  SCHEMA_TEMPLATE: '/api/connectors/schema/template',
 };

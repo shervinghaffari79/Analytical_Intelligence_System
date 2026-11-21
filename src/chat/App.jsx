@@ -101,7 +101,8 @@ export default function App() {
     if (!opts.auto && existing && existing.messages.some(m => m.role === 'assistant' && m.status === 'running')) return;
 
     const convId = existing ? existing.id : newId();
-    const userMsg = { id: msgId(), role: 'user', text: trimmed, ts: Date.now(), attachments: files.map(f => ({ name: f.name, size: f.size })) };
+    const userMsg = { id: msgId(), role: 'user', text: trimmed, ts: Date.now(), attachments: files.map(f => ({ name: f.name, size: f.size })),
+                      ...(opts.note ? { synthetic: true, note: opts.note } : {}) };
     const asstId = msgId();
     const asst = { id: asstId, role: 'assistant', ts: Date.now(), startedAt: Date.now(), status: 'running', agent: '', question: trimmed, steps: [], blocks: [] };
     const history = existing ? existing.messages : [];
@@ -157,11 +158,16 @@ export default function App() {
   // messages, not just the latest (which is often "I don't see the button").
   const goalBefore = (messages, assistantId) => {
     const idx = messages.findIndex(m => m.id === assistantId);
+    // The request is the user's latest real message. A very short one ("I don't see the
+    // button", "continue") carries no task, so the message before it is included too.
     const asks = [];
-    for (let i = (idx < 0 ? messages.length : idx) - 1; i >= 0 && asks.length < 4; i--) {
+    for (let i = (idx < 0 ? messages.length : idx) - 1; i >= 0 && asks.length < 2; i--) {
       const m = messages[i];
-      if (m.role === 'assistant' && (m.blocks || []).some(b => b.type === 'load_plan' && b.status === 'loaded')) break;
-      if (m.role === 'user' && (m.text || '').trim().length > 1 && !asks.includes(m.text.trim())) asks.unshift(m.text.trim());
+      if (m.role !== 'user' || m.synthetic) continue;
+      const t = (m.text || '').trim();
+      if (t.length < 2 || asks.includes(t)) continue;
+      asks.unshift(t);
+      if (t.length >= 30) break;
     }
     return asks;
   };
@@ -176,7 +182,8 @@ export default function App() {
     const list = names && names.length ? ` (${names.join(', ')})` : '';
     sendQuery(asks.length
       ? `Using the tables I just loaded${list}, do what I asked:\n${asks.map(a => `- ${a}`).join('\n')}`
-      : `Give me an overview of the tables I just loaded${list} with the most informative chart.`, [], 'analyst');
+      : `Give me an overview of the tables I just loaded${list} with the most informative chart.`, [], 'analyst',
+      { note: `Loaded${list || ' the tables'} — continuing with your request` });
   }, [refreshTables, sendQuery]);
 
   const ask = useCallback((text, forcedMode) => sendQuery(text, [], forcedMode), [sendQuery]);
@@ -241,7 +248,9 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              active.messages.map((m, i) => m.role === 'user' ? (
+              active.messages.map((m, i) => m.role === 'user' && m.synthetic ? (
+                <div key={m.id} className="msg-note" dir="auto">↳ {m.note}</div>
+              ) : m.role === 'user' ? (
                 <div key={m.id} className="msg-user">
                   <div className="bubble-col">
                     {m.attachments && m.attachments.length > 0 && (

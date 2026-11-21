@@ -256,7 +256,7 @@ async function runAnalyst({ question, history, model, agentMode, tables, images,
         // hand-off that never happens left the analyst "waiting" forever.
         delegate = ev.delegate_prompt || ev.prompt || question;
         update(m => addBlock(settleSteps(m), {
-          type: 'notice', text: 'The data for this is not loaded yet — handing over to the data agent to find it.',
+          type: 'notice', text: `The data for this is not loaded yet — handing over to the data agent: “${String(delegate).slice(0, 220)}”`,
         }));
         break;
       }

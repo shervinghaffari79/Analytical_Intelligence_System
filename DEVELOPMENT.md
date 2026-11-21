@@ -20,7 +20,7 @@ uv run data_formulator --dev   # Run backend only (for frontend development)
 ```
 
 **Which command to use:**
-- **End users / testing the full app**: `uv run data_formulator` - starts server and opens browser to http://localhost:5567
+- **End users / testing the full app**: `uv run data_formulator` - starts server and opens browser to http://localhost:5000
 - **Frontend development**: `uv run data_formulator --dev` - starts backend server only, then run `yarn start` separately for the Vite dev server on http://localhost:5173
 
 ### Option 2: With pip (fallback)
@@ -99,7 +99,7 @@ package. The alias is wired in `vite.config.ts` and `vitest.config.ts`.
 ## Conversational UI (`/chat`)
 
 A second, chat-first page lives in `src/chat/` and is served at
-[http://localhost:5567/chat](http://localhost:5567/chat). It talks to the same
+[http://localhost:5000/chat](http://localhost:5000/chat). It talks to the same
 backend as the workspace app: the data-loading agent finds and loads tables,
 the analyst agent answers questions, and both stream their steps, text and
 charts as they are produced. Charts are rendered with the same engine
@@ -111,6 +111,36 @@ charts as they are produced. Charts are rendered with the same engine
 
 It is built with its own config (`vite.chat.config.ts`) so the two pages never
 share chunks.
+
+## Schema files for new databases
+
+Instead of letting the agents explore a new database table by table, give them a schema file
+(YAML, JSON or a CSV data dictionary): descriptions, value meanings, units, relationships, rules and
+tables to ignore. Data panel → *Schema file* → download a pre-filled template, fill it in, upload.
+See [docs/schema-file.md](docs/schema-file.md).
+
+## Serving on port 5000 / on the internet
+
+By default the app listens on `0.0.0.0:5000` (all interfaces, reachable via the server IP). Use `--host 127.0.0.1` for local-only. To serve it on port 5000 on every network
+interface of a server (reachable at `http://<server-ip>:5000`):
+
+```bash
+PORT=5000 HOST=0.0.0.0 DF_ACCESS_PASSWORD='choose-a-long-password' uv run data_formulator
+# equivalent flags: uv run data_formulator --host 0.0.0.0 --port 5000
+```
+
+- `PORT` (or `DF_PORT`) sets the default port, `HOST` the default interface; the flags win.
+- `DF_ACCESS_PASSWORD` turns on a shared-password prompt (HTTP Basic, any username) for every
+  page and API call. **Set it whenever the port is reachable from outside**: the app runs
+  model-written Python on the server, so an open port is an open shell. Without it the server
+  logs a security warning at start-up. For more than one person use a real identity provider
+  (see the authentication section of `.env.template`) or an authenticating reverse proxy.
+- Open the firewall / cloud security group for TCP 5000. Plain HTTP sends the password in
+  clear text; put TLS in front (Caddy, nginx, a cloud load balancer) for anything but a trial.
+- **Google Colab** gives notebooks no public IP address and no inbound ports, so
+  `<ip>:5000` is never reachable from outside. Use Colab's own proxy (the notebook prints
+  links) or the notebook's optional public-URL cell, which opens a tunnel to port 5000.
+- The conversational UI is at `/chat`, the workspace app at `/`.
 
 ## Build for Production
 
@@ -151,7 +181,7 @@ share chunks.
     python -m data_formulator
     ```
 
-    Open [http://localhost:5567](http://localhost:5567) to view it in the browser.
+    Open [http://localhost:5000](http://localhost:5000) to view it in the browser.
 
 
 ## Docker
@@ -173,7 +203,7 @@ Docker is the easiest way to run Data Formulator without installing Python or No
     docker compose up --build
     ```
 
-3. Open [http://localhost:5567](http://localhost:5567) in your browser.
+3. Open [http://localhost:5000](http://localhost:5000) in your browser.
 
 To stop the container: `docker compose down`
 
@@ -183,7 +213,7 @@ Workspace data (uploaded files, sessions) is persisted in a Docker volume (`data
 
 ```bash
 docker build -t data-formulator .
-docker run --rm -p 5567:5567 --env-file .env data-formulator
+docker run --rm -p 5000:5000 --env-file .env data-formulator
 ```
 
 ### Docker sandbox (`SANDBOX=docker`) is not supported inside a container
@@ -485,7 +515,7 @@ FLASK_SECRET_KEY=<generate-with-secrets-token-hex-32>
 | `--max-display-rows` | `MAX_DISPLAY_ROWS` | `10000` | Max rows sent to frontend |
 | `--data-dir` | `DATA_FORMULATOR_HOME` | `~/.data_formulator` | Data directory |
 | `--host` | `HOST` | `127.0.0.1` | Network interface to bind |
-| `-p`, `--port` | — | `5567` | Port number |
+| `-p`, `--port` | — | `5000` | Port number |
 | `--dev` | `DEV_MODE` | `false` | Development mode (no auto-open browser) |
 | — | `AUTH_PROVIDER` | *(unset)* | `oidc`, `github`, `azure_easyauth`, or unset for anonymous |
 | — | `ALLOW_ANONYMOUS` | `true` | Allow unauthenticated access when auth provider is set |

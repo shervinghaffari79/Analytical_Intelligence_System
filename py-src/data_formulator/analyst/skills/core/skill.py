@@ -242,10 +242,10 @@ class CoreSkill:
             "thought": action.get("thought", ""),
             **payload,
         }
-        return (
-            f"[DELEGATED to {payload['target']}] Handed off to the "
-            f"'{payload['target']}' agent; this run is complete."
-        )
+        # Terminal, like ``ask_user``: the hand-off ends this run. Returning an
+        # observation made the model write one more message, and it used it to claim
+        # that the other agent had already loaded the data (it had not started).
+        return None
 
     # ------------------------------------------------------------------
     # Observation formatting

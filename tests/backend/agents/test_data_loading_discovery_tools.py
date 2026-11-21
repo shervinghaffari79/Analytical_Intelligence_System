@@ -273,11 +273,14 @@ class TestProposeLoadPlan:
         assert action["reasoning"] == "Orders + customer dimension"
         assert [candidate["selected"] for candidate in action["candidates"]] == [True, False]
 
-    def test_empty_candidates_returns_empty_action(self) -> None:
+    def test_empty_candidates_is_an_error_the_model_sees(self) -> None:
+        # An empty plan shows no card. Reporting success made the model tell the
+        # user "a card is shown" while the user had no Load button to press.
         agent = DataLoadingAgent(client=None, workspace=_FakeWorkspace())
-        result = agent._tool_propose_load_plan({"candidates": []})
-        assert result["actions"][0]["type"] == "load_plan"
-        assert result["actions"][0]["candidates"] == []
+        for args in ({"candidates": []}, {}, {"candidates": ["not-a-dict"]}):
+            result = agent._tool_propose_load_plan(args)
+            assert "actions" not in result
+            assert "NO card was shown" in result["error"]
 
     def test_selects_first_resolvable_when_agent_selects_none(self, tmp_path: Path) -> None:
         save_catalog(tmp_path, "pg_prod", [
@@ -624,3 +627,28 @@ class TestConnectorTools:
         agent._tool_list_connectors({})
         result = agent._tool_propose_connection({"source_type": "definitely_not_a_loader"})
         assert "error" in result
+
+
+class TestBuiltinCatalogsAreSeeded:
+    """A fresh user must see the built-in sample datasets without any other step."""
+
+    def test_prompt_list_and_find_seed_before_reading(self, tmp_path: Path) -> None:
+        agent = DataLoadingAgent(client=None, workspace=_FakeWorkspace(tmp_path))
+        calls: list[str] = []
+
+        def fake_seed(user_home) -> None:
+            calls.append(str(user_home))
+            save_catalog(tmp_path, "sample_datasets", _SAMPLE_TABLES)
+
+        with patch("data_formulator.agents.context._ensure_no_auth_catalogs_cached", fake_seed):
+            prompt = agent._build_system_prompt("hello")
+            assert calls, "system prompt must seed built-in catalogs first"
+            assert "sample_datasets" in prompt, "seeded source must be listed as connected"
+
+            calls.clear()
+            assert agent._tool_list_data({})["sources"], "list_data must see the seeded source"
+            assert calls
+
+            calls.clear()
+            agent._tool_find_data({"query": "customers"})
+            assert calls

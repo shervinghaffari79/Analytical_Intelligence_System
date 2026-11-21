@@ -145,13 +145,28 @@ def test_done_sentinel_ends_quietly_and_never_reaches_the_user():
     assert not actions and len(client.seen) == 3
 
 
-def test_question_to_the_user_is_not_nudged_and_real_text_after_notice_is_shown():
+def test_a_real_clarifying_question_can_stand_but_a_permission_question_is_pushed_to_a_plan():
+    from data_formulator.agents.agent_data_loading_chat import _PERMISSION_QUESTION_NOTICE
+
+    # "shall I load it?" after exploring is a stall: nudged once, and the model then proposes the plan
+    client = _Client([
+        [_chunk(tool_calls=_tool_call("describe_data"), finish="tool_calls")],
+        [_chunk("This is the stock-movement table. Shall I load it?")],
+        [_chunk(tool_calls=_tool_call("propose_load_plan"), finish="tool_calls")],
+        [_chunk("Plan ready.")],
+    ])
+    _, _, actions = _run(client)
+    assert [a["type"] for a in actions] == ["load_plan"]
+    assert client.seen[2][-1] == {"role": "user", "content": _PERMISSION_QUESTION_NOTICE}
+
+    # a genuine clarification ends quietly when the model confirms with DONE (and DONE is never shown)
     client = _Client([
         [_chunk(tool_calls=_tool_call("list_data"), finish="tool_calls")],
         [_chunk("Which year do you want?")],
+        [_chunk("DONE")],
     ])
-    _run(client)
-    assert len(client.seen) == 2
+    _, collected, actions = _run(client)
+    assert not actions and "DONE" not in "".join(collected) and "Which year do you want?" in "".join(collected)
 
     client = _Client([
         [_chunk(tool_calls=_tool_call("find_data"), finish="tool_calls")],
@@ -189,3 +204,16 @@ def test_plan_where_nothing_resolved_does_not_end_the_turn():
         {"source_id": "mysql:x", "table_key": "db.nope", "resolution_error": "not found"}]}]}
     list(agent._agentic_loop([{"role": "user", "content": "sales"}], [], [], 6))
     assert len(client.seen) == 2
+
+
+def test_system_prompt_forbids_fabricated_data_and_false_load_claims():
+    from data_formulator.agents.agent_data_loading_chat import SYSTEM_PROMPT
+    assert "NEVER invent, estimate or recall data from memory" in SYSTEM_PROMPT
+    assert "A load plan only PROPOSES tables" in SYSTEM_PROMPT
+    assert "never tell the user a" in SYSTEM_PROMPT
+
+
+def test_prompt_tells_the_agent_to_use_worked_examples_and_declared_references():
+    from data_formulator.agents.agent_data_loading_chat import SYSTEM_PROMPT
+    assert 'Worked example' in SYSTEM_PROMPT and "include ALL of them" in SYSTEM_PROMPT
+    assert "references … (declared)" in SYSTEM_PROMPT

@@ -418,14 +418,14 @@ def handle_read_catalog_metadata(
     if not catalog:
         return f"No cached catalog found for source '{source_id}'."
 
-    target = None
-    for t in catalog:
-        if t.get("table_key") == table_key:
-            target = t
-            break
+    from data_formulator.datalake.catalog_cache import resolve_catalog_entry
+    target, suggestions = resolve_catalog_entry(catalog, table_key)
 
     if target is None:
-        return f"Table with key '{table_key}' not found in source '{source_id}'."
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return (f"Table with key '{table_key}' not found in source '{source_id}'.{hint} "
+                "Use the exact table_key shown by list_data / find_data.")
+    table_key = target.get("table_key", table_key)
 
     meta = target.get("metadata") or {}
 
@@ -471,10 +471,18 @@ def handle_read_catalog_metadata(
 
     table_desc = meta.get("description", "") or meta.get("source_description", "")
     if table_desc:
-        label = "Description (auto-generated from data)" if meta.get("description_source") == "auto" else "Description"
+        label = {"auto": "Description (auto-generated from data)",
+                 "schema": "Description (from the user's schema file — authoritative)"}.get(
+            meta.get("description_source"), "Description")
         lines.append(f"\n{label}: {table_desc}")
+    if meta.get("grain"):
+        lines.append(f"Grain (one row is): {meta['grain']}")
+    if meta.get("notes"):
+        lines.append(f"Notes: {meta['notes']}")
     if meta.get("relationships"):
-        lines.append("\nRelationships (inferred from data; none are declared):")
+        declared = any("(declared)" in r for r in meta["relationships"])
+        lines.append("\nRelationships (" + ("declared in the user's schema where marked; the rest inferred from data" if declared
+                                              else "inferred from data; none are declared") + "):")
         lines.extend(f"  - {r}" for r in meta["relationships"][:20])
 
     columns = meta.get("columns", [])

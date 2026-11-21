@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import Markdown from 'markdown-to-jsx';
 import ChartCard from './ChartCard.jsx';
 import { LoadPlanCard, PreviewCard, ConnectForm, QuestionsCard } from './Cards.jsx';
+import { escapeIntrawordUnderscores } from '../format.js';
 
 const md = { forceBlock: true, disableParsingRawHTML: true, overrides: { a: { props: { target: '_blank', rel: 'noopener noreferrer' } } } };
 
@@ -62,12 +63,12 @@ export default function AgentMessage({ message, onAsk, onStop, onPatchBlock, onL
           case 'report':
             return (
               <div key={key} className={'resp-text md' + (b.type === 'report' ? ' report' : '')} dir="auto">
-                <Markdown options={md}>{b.text}</Markdown>
+                <Markdown options={md}>{escapeIntrawordUnderscores(b.text)}</Markdown>
                 {running && i === blocks.length - 1 && <span className="caret" aria-hidden="true" />}
               </div>
             );
           case 'chart': return <ChartCard key={b.id || key} block={b} onAsk={onAsk} showToast={showToast} />;
-          case 'load_plan': return <LoadPlanCard key={key} block={b} onChange={patch} showToast={showToast} canAnalyze={!!message.question} onLoaded={(names, analyze) => onLoaded(names, analyze ? message.question : null)} />;
+          case 'load_plan': return <LoadPlanCard key={key} block={b} onChange={patch} showToast={showToast} canAnalyze onLoaded={(names, analyze) => onLoaded(names, analyze ? message.id : null)} />;
           case 'preview': return <PreviewCard key={key} block={b} onChange={patch} showToast={showToast} onLoaded={names => onLoaded(names, null)} />;
           case 'connect_form':
             return <ConnectForm key={key} sourceType={b.sourceType} prefilled={b.prefilled} status={b.status} showToast={showToast}

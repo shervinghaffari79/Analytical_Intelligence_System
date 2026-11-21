@@ -243,9 +243,15 @@ def build_catalog_metadata_lookups(
         # Glue parameters, BigQuery field descriptions, …). User-authored
         # guidance lives in Knowledge → Rules instead.
         catalogs: list[dict[str, Any]] = []
+        source_rules: dict[int, list[str]] = {}
+        from data_formulator.datalake.catalog_schema import load_schema
         for source_id in list_cached_sources(user_home):
             catalog = load_catalog(Path(user_home), source_id) or []
             catalogs.extend(catalog)
+            rules = (load_schema(Path(user_home), source_id) or {}).get("rules") or []
+            if rules:
+                for entry in catalog:
+                    source_rules[id(entry)] = rules
 
         for table_name, table_meta in ws_meta.tables.items():
             source_table = getattr(table_meta, "source_table", None)
@@ -278,6 +284,11 @@ def build_catalog_metadata_lookups(
                 sem_note = _SEMANTIC_NOTES.get(col.get("semantic_type") or "")
                 if sem_note:
                     col_desc = f"{col_desc} [{sem_note}]" if col_desc else sem_note
+                # What stored values mean (written in a schema file): without this the
+                # analyst sees 1/2/3 and guesses.
+                if col.get("value_meanings"):
+                    vm = f"values: {col['value_meanings']}"
+                    col_desc = f"{col_desc} [{vm}]" if col_desc else vm
                 if col_desc:
                     column_descs[col_name] = str(col_desc)
                 cm: dict[str, str] = {}
@@ -291,10 +302,18 @@ def build_catalog_metadata_lookups(
                     cm["source_description"] = str(col_desc)
                 if cm:
                     col_metas[col_name] = cm
+            extra: list[str] = []
+            if meta.get("grain"):
+                extra.append(f"One row is: {meta['grain']}")
+            if meta.get("notes"):
+                extra.append(f"Notes: {meta['notes']}")
             if meta.get("relationships"):
-                table_extra_cache[table_name] = [
-                    "Relationships (inferred): " + "; ".join(str(r) for r in meta["relationships"][:12])
-                ]
+                extra.append("Relationships: " + "; ".join(str(r) for r in meta["relationships"][:12]))
+            rules = source_rules.get(id(match))
+            if rules:
+                extra.append("Rules for this database: " + " | ".join(rules)[:600])
+            if extra:
+                table_extra_cache[table_name] = extra
             if column_descs:
                 col_desc_cache[table_name] = column_descs
             if col_metas:

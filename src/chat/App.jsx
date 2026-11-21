@@ -23,6 +23,11 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [tables, setTables] = useState([]);
   const [models, setModels] = useState([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  // Resolves once the server's model list has arrived, so a message sent in the first
+  // second is held briefly instead of failing with "No model is configured".
+  const modelsReady = useRef(null);
+  if (!modelsReady.current) { let resolve; const promise = new Promise(r => { resolve = r; }); modelsReady.current = { promise, resolve }; }
   const [modelId, setModelId] = useState(prefs.modelId || '');
   const [agentMode, setAgentMode] = useState(prefs.agentMode || 'standard');
   const [mode, setMode] = useState('auto');
@@ -68,8 +73,12 @@ export default function App() {
 
   useEffect(() => {
     refreshTables();
-    api(URLS.LIST_MODELS).then(list => setModels(Array.isArray(list) ? list : [])).catch(err => setServerError(errorText(err)));
+    api(URLS.LIST_MODELS)
+      .then(list => setModels(Array.isArray(list) ? list : []))
+      .catch(err => setServerError(errorText(err)))
+      .finally(() => setModelsLoaded(true));
   }, [refreshTables]);
+  useEffect(() => { if (modelsLoaded) modelsReady.current.resolve(); }, [modelsLoaded]);
 
   /* ---- scrolling: follow the stream unless the user scrolled up ---- */
   const onScroll = () => {
@@ -83,23 +92,27 @@ export default function App() {
   useEffect(() => { stickRef.current = true; }, [activeId]);
 
   /* ---- sending ---- */
-  const sendQuery = useCallback((text, files = [], forcedMode) => {
+  const sendQuery = useCallback((text, files = [], forcedMode, opts = {}) => {
     const trimmed = (text || '').trim();
     if (!trimmed && files.length === 0) return;
     const existing = convRef.current.find(c => c.id === activeIdRef.current);
-    if (existing && existing.messages.some(m => m.role === 'assistant' && m.status === 'running')) return;
+    // `auto` turns (an agent handing over to another) start the moment the previous
+    // one finishes, before React has re-rendered its status.
+    if (!opts.auto && existing && existing.messages.some(m => m.role === 'assistant' && m.status === 'running')) return;
 
     const convId = existing ? existing.id : newId();
-    const userMsg = { id: msgId(), role: 'user', text: trimmed, ts: Date.now(), attachments: files.map(f => ({ name: f.name, size: f.size })) };
+    const userMsg = { id: msgId(), role: 'user', text: trimmed, ts: Date.now(), attachments: files.map(f => ({ name: f.name, size: f.size })),
+                      ...(opts.note ? { synthetic: true, note: opts.note } : {}) };
     const asstId = msgId();
     const asst = { id: asstId, role: 'assistant', ts: Date.now(), startedAt: Date.now(), status: 'running', agent: '', question: trimmed, steps: [], blocks: [] };
     const history = existing ? existing.messages : [];
+    const added = opts.auto ? [{ ...asst, auto: true }] : [userMsg, asst];
 
     setConversations(prev => {
       const convs = [...prev];
       const idx = convs.findIndex(c => c.id === convId);
-      if (idx >= 0) convs[idx] = { ...convs[idx], messages: [...convs[idx].messages, userMsg, asst], updatedAt: Date.now() };
-      else convs.unshift({ id: convId, title: (trimmed || files[0].name).slice(0, 70), createdAt: Date.now(), updatedAt: Date.now(), messages: [userMsg, asst] });
+      if (idx >= 0) convs[idx] = { ...convs[idx], messages: [...convs[idx].messages, ...added], updatedAt: Date.now() };
+      else convs.unshift({ id: convId, title: (trimmed || files[0].name).slice(0, 70), createdAt: Date.now(), updatedAt: Date.now(), messages: added });
       return convs;
     });
     setActiveId(convId);
@@ -111,11 +124,18 @@ export default function App() {
     })));
     const controller = new AbortController();
     aborts.current.set(asstId, controller);
-    runTurn({
+    modelsReady.current.promise.then(() => runTurn({
       text: trimmed, files, mode: forcedMode || modeRef.current, history, model: modelRef.current, agentMode: agentModeRef.current,
       tables: tablesRef.current, update, refreshTables, signal: controller.signal,
-    }).finally(() => { aborts.current.delete(asstId); refreshTables(); });
+    })).then(result => {
+      aborts.current.delete(asstId);
+      refreshTables();
+      // The analyst needs data it does not have: actually start the data agent.
+      if (result && result.delegate && result.status === 'done') sendRef.current(result.delegate, [], 'data', { auto: true });
+    });
   }, [refreshTables]);
+  const sendRef = useRef(null);
+  sendRef.current = sendQuery;
 
   // Latest values for the stable `sendQuery` callback.
   const activeIdRef = useRef(activeId); activeIdRef.current = activeId;
@@ -134,11 +154,36 @@ export default function App() {
     })));
   }, []);
 
+  // What the person actually asked for before a plan card appeared: their last few
+  // messages, not just the latest (which is often "I don't see the button").
+  const goalBefore = (messages, assistantId) => {
+    const idx = messages.findIndex(m => m.id === assistantId);
+    // The request is the user's latest real message. A very short one ("I don't see the
+    // button", "continue") carries no task, so the message before it is included too.
+    const asks = [];
+    for (let i = (idx < 0 ? messages.length : idx) - 1; i >= 0 && asks.length < 2; i--) {
+      const m = messages[i];
+      if (m.role !== 'user' || m.synthetic) continue;
+      const t = (m.text || '').trim();
+      if (t.length < 2 || asks.includes(t)) continue;
+      asks.unshift(t);
+      if (t.length >= 30) break;
+    }
+    return asks;
+  };
+
   // A card finished loading data or connecting a source: carry on with the task.
-  const onLoaded = useCallback(async (names, question, connected) => {
+  const onLoaded = useCallback(async (names, analyzeMessageId, connected) => {
     await refreshTables();
-    if (connected) sendQuery(`I connected "${connected.name}". Continue with what I asked for.`, [], 'data');
-    else if (question) sendQuery(question, [], 'analyst');
+    if (connected) { sendQuery(`I connected "${connected.name}". Continue with what I asked for.`, [], 'data'); return; }
+    if (!analyzeMessageId) return;
+    const conv = convRef.current.find(c => c.id === activeIdRef.current);
+    const asks = conv ? goalBefore(conv.messages, analyzeMessageId) : [];
+    const list = names && names.length ? ` (${names.join(', ')})` : '';
+    sendQuery(asks.length
+      ? `Using the tables I just loaded${list}, do what I asked:\n${asks.map(a => `- ${a}`).join('\n')}`
+      : `Give me an overview of the tables I just loaded${list} with the most informative chart.`, [], 'analyst',
+      { note: `Loaded${list || ' the tables'} — continuing with your request` });
   }, [refreshTables, sendQuery]);
 
   const ask = useCallback((text, forcedMode) => sendQuery(text, [], forcedMode), [sendQuery]);
@@ -203,7 +248,9 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              active.messages.map((m, i) => m.role === 'user' ? (
+              active.messages.map((m, i) => m.role === 'user' && m.synthetic ? (
+                <div key={m.id} className="msg-note" dir="auto">↳ {m.note}</div>
+              ) : m.role === 'user' ? (
                 <div key={m.id} className="msg-user">
                   <div className="bubble-col">
                     {m.attachments && m.attachments.length > 0 && (

@@ -113,8 +113,13 @@ def _load_catalog_raw(workspace_root: Path | str, source_id: str) -> dict[str, A
     # descriptions). Kept in a separate store so a re-sync never discards it.
     try:
         from data_formulator.datalake.catalog_profile import apply_profiles, load_profiles
+        from data_formulator.datalake.catalog_schema import apply_schema, load_schema
         if isinstance(raw, dict) and isinstance(raw.get("tables"), list):
-            apply_profiles(raw["tables"], load_profiles(workspace_root, raw.get("source_id") or source_id))
+            sid = raw.get("source_id") or source_id
+            apply_profiles(raw["tables"], load_profiles(workspace_root, sid))
+            # The user's schema file is applied last so a person's words always win
+            # over measured and generated metadata.
+            apply_schema(raw["tables"], load_schema(workspace_root, sid))
     except Exception:
         logger.debug("Failed to overlay catalog profile for %s", source_id, exc_info=True)
     return raw
@@ -273,7 +278,7 @@ def _search_python(
         source_hits: list[dict[str, Any]] = []
         for t in tables:
             tname = t.get("name", "")
-            if tname in exclude:
+            if tname in exclude or (t.get("metadata") or {}).get("ignored"):
                 continue
 
             # Path-prefix filter
@@ -306,6 +311,13 @@ def _search_python(
                     "generated_description" if meta.get("description_source") == "auto"
                     else "source_description"
                 )
+
+            # Row grain and notes written in a schema file ("one row per invoice line").
+            if "description" in match_fields and any(
+                _matches(str(meta.get(k) or "")) for k in ("grain", "notes")
+            ):
+                score += 3
+                match_reasons.append("schema_notes")
 
             # Generated search keywords (bilingual) for undocumented tables.
             if "description" in match_fields:
@@ -434,7 +446,7 @@ def list_sources_summary(
         raw = _load_catalog_raw(workspace_root, sid)
         if not raw:
             continue
-        tables = raw.get("tables", []) or []
+        tables = [t for t in (raw.get("tables", []) or []) if not (t.get("metadata") or {}).get("ignored")]
         is_hier = False
         for t in tables:
             p = t.get("path")
@@ -501,6 +513,8 @@ def list_path_children(
     leaf_tables: list[dict[str, Any]] = []
 
     for t in tables_raw:
+        if (t.get("metadata") or {}).get("ignored"):
+            continue
         tname = t.get("name", "")
         tpath = t.get("path") or []
         if not isinstance(tpath, list):
@@ -581,3 +595,45 @@ def list_path_children(
             + "') to search this subtree."
         )
     return result
+
+
+def resolve_catalog_entry(
+    tables: list[dict[str, Any]], key: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Find a catalog table from a key a model or person typed.
+
+    Order: exact ``table_key`` / name / source name, then case-insensitive, then the
+    last path segment when it is unique (``tbl_faktor`` for ``db.tbl_faktor``). Models
+    copy short names from descriptions, glossaries and their own memory; rejecting them
+    cost a round trip each and sometimes ended a turn without a plan.
+
+    Returns ``(entry, suggestions)``: *entry* is None when nothing (or more than one
+    table) matches, and *suggestions* then lists close or competing keys.
+    """
+    import difflib
+
+    key = str(key or "").strip()
+    if not key:
+        return None, []
+
+    def ids(t: dict[str, Any]) -> list[str]:
+        meta = t.get("metadata") or {}
+        return [str(x) for x in (t.get("table_key"), t.get("name"), meta.get("_source_name"),
+                                 meta.get("uuid"), meta.get("dataset_id")) if x not in (None, "")]
+
+    low = key.lower()
+    tail = low.split(".")[-1]
+    stages = (
+        lambda t: key == str(t.get("table_key") or ""),
+        lambda t: key in ids(t),
+        lambda t: low in (i.lower() for i in ids(t)),
+        lambda t: any(i.split(".")[-1].lower() == tail for i in ids(t)),
+    )
+    for stage in stages:
+        hits = {id(t): t for t in tables if stage(t)}
+        if len(hits) == 1:
+            return next(iter(hits.values())), []
+        if len(hits) > 1:  # several tables answer to this name: never guess
+            return None, sorted(str(t.get("table_key") or t.get("name") or "") for t in hits.values())[:6]
+    keys = sorted({str(t.get("table_key") or t.get("name") or "") for t in tables})
+    return None, difflib.get_close_matches(key, keys, n=4, cutoff=0.5)

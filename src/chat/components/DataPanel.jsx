@@ -5,6 +5,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, errorText, URLS } from '../api.js';
 import { ConnectForm } from './Cards.jsx';
+import SchemaBox from './SchemaBox.jsx';
 import { fmtNum } from '../format.js';
 
 export default function DataPanel({ open, onClose, tables, refreshTables, model, showToast, onAsk }) {
@@ -12,6 +13,7 @@ export default function DataPanel({ open, onClose, tables, refreshTables, model,
   const [loaders, setLoaders] = useState([]);
   const [adding, setAdding] = useState('');
   const [busy, setBusy] = useState({});
+  const [schemaOpen, setSchemaOpen] = useState(null);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -94,11 +96,13 @@ export default function DataPanel({ open, onClose, tables, refreshTables, model,
               {busy[c.id] ? <span className="ri-busy"><span className="mini-spin" /> {busy[c.id]}</span> : (
                 <>
                   <button className="btn small" title="Refresh the list of tables" onClick={() => sync(c)}>Sync</button>
-                  {c.source === 'user' && <button className="btn small" title="Profile the tables and generate descriptions so the agent can find undocumented data" onClick={() => describe(c)}>Describe tables</button>}
+                  {c.source === 'user' && <button className={'btn small' + (schemaOpen === c.id ? ' on' : '')} title="Give the agents a schema file you wrote, so they do not have to explore the tables" onClick={() => setSchemaOpen(o => (o === c.id ? null : c.id))}>Schema file</button>}
+                  {c.source === 'user' && <button className="btn small" title="No schema file? Profile the tables and generate descriptions automatically (slow)" onClick={() => describe(c)}>Describe tables</button>}
                   <button className="btn small" onClick={() => { onClose(); onAsk(`What data is available in ${c.display_name}?`, 'data'); }}>Browse</button>
                   {c.deletable && <button className="btn small danger" onClick={() => remove(c)}>Remove</button>}
                 </>
               )}
+              {schemaOpen === c.id && <SchemaBox connector={c} showToast={showToast} />}
             </div>
           ))}
 

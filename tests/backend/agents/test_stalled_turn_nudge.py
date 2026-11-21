@@ -189,3 +189,10 @@ def test_plan_where_nothing_resolved_does_not_end_the_turn():
         {"source_id": "mysql:x", "table_key": "db.nope", "resolution_error": "not found"}]}]}
     list(agent._agentic_loop([{"role": "user", "content": "sales"}], [], [], 6))
     assert len(client.seen) == 2
+
+
+def test_system_prompt_forbids_fabricated_data_and_false_load_claims():
+    from data_formulator.agents.agent_data_loading_chat import SYSTEM_PROMPT
+    assert "NEVER invent, estimate or recall data from memory" in SYSTEM_PROMPT
+    assert "A load plan only PROPOSES tables" in SYSTEM_PROMPT
+    assert "never tell the user a" in SYSTEM_PROMPT

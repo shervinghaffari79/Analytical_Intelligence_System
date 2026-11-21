@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import argparse
+import hmac
 import sys
 import os
 import warnings
@@ -346,6 +347,39 @@ _register_blueprints()
 _safety_checks()
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _access_password() -> str:
+    """The shared access password, read per request so it can be set late."""
+    return os.environ.get("DF_ACCESS_PASSWORD", "")
+
+
+@app.before_request
+def _require_access_password():
+    """Optional HTTP Basic gate for deployments reachable from the internet.
+
+    The app runs model-written Python on the server, so exposing it with
+    ``--host 0.0.0.0`` and no login hands that to anyone who finds the address.
+    Set ``DF_ACCESS_PASSWORD`` to require a password (any username) on every
+    page and API call. Unset (the default) leaves behaviour unchanged.
+    """
+    password = _access_password()
+    if not password:
+        return None
+    auth = request.authorization
+    if auth is not None and auth.type == "basic" and hmac.compare_digest(
+        (auth.password or "").encode("utf-8"), password.encode("utf-8")
+    ):
+        return None
+    time.sleep(0.3)  # blunt online password guessing
+    return Response(
+        "Authentication required",
+        status=401,
+        headers={"WWW-Authenticate": 'Basic realm="Data Formulator", charset="UTF-8"'},
+    )
+
+
 @app.route("/", defaults={"path": ""})
 def index_alt(path):
     logger.info(app.static_folder)
@@ -453,7 +487,9 @@ def get_app_config():
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Data Formulator")
-    parser.add_argument("-p", "--port", type=int, default=5567, help="The port number you want to use")
+    parser.add_argument("-p", "--port", type=int,
+        default=int(os.environ.get('PORT') or os.environ.get('DF_PORT') or 5567),
+        help="The port number you want to use (default: $PORT, else 5567)")
     parser.add_argument("--host", type=str, default=os.environ.get('HOST', '127.0.0.1'),
         help="Network interface to bind to (default: 127.0.0.1). "
              "Use 0.0.0.0 to accept connections from other machines.")
@@ -552,6 +588,16 @@ def run_app():
 
     url = "http://localhost:{0}".format(args.port)
     print(f"Ready! Open {url} in your browser.", flush=True)
+    if args.host not in _LOOPBACK_HOSTS:
+        print(f"  Listening on {args.host}:{args.port} — reachable from other machines.", flush=True)
+        if _access_password():
+            print("  Access is protected by DF_ACCESS_PASSWORD (HTTP Basic, any username).", flush=True)
+        else:
+            logger.warning(
+                "SECURITY: listening on %s with no access password. Anyone who can reach "
+                "port %s can use this app, including the Python it executes. Set "
+                "DF_ACCESS_PASSWORD (or put it behind an authenticating proxy).",
+                args.host, args.port)
     
     if not args.dev:
         threading.Timer(1.5, lambda: webbrowser.open(url, new=2)).start()

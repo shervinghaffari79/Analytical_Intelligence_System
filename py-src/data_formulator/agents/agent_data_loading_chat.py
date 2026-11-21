@@ -247,6 +247,19 @@ Workflow selection rubric (apply in order):
   Workflow 4 (list_connectors → describe_connector? → propose_connection). Do NOT
   synthesize data when the user actually wants to connect a real source.
 
+Honesty rules (these override everything else):
+- NEVER invent, estimate or recall data from memory. Every row, number or ranking you present must come
+  from a tool result in this conversation. Do not build a table by typing values into execute_python or
+  show_user_data_preview unless the user supplied those values (a pasted table, a screenshot, an attachment).
+  If you could not obtain the data, say so plainly and say what is missing.
+- Do not claim data is loaded, or analysis is done, unless a table named in "Currently loaded workspace
+  tables" proves it. A load plan only PROPOSES tables; the user confirms it with the card's button. After
+  propose_load_plan, stop and tell the user in one or two sentences to press the button on the card.
+- Only call propose_load_plan with candidates copied exactly (source_id + table_key) from find_data,
+  list_data or describe_data results. If the tool returns an error, fix the call; never tell the user a
+  card is shown unless the tool result says so.
+- Do not comment on which language the user wrote in; just answer in it.
+
 Rules:
 - Broad, open-ended questions ("what data do we have?", "help me connect", "how do I get
   started?", "what can you do?") deserve a fuller, orienting answer than a narrow task reply.
@@ -1963,6 +1976,21 @@ class DataLoadingAgent:
         raw = [c for c in (args.get("candidates", []) or []) if isinstance(c, dict)]
         candidates = [self._normalize_load_plan_candidate(c) for c in raw]
         reasoning = args.get("reasoning", "")
+
+        if not candidates:
+            # An empty plan renders nothing, yet used to be reported as success,
+            # so the model told the user "a card is shown" and the user (rightly)
+            # saw no Load button. Make the model fix its call instead.
+            return {
+                "error": (
+                    "propose_load_plan was called without any candidates, so NO card "
+                    "was shown to the user. Do not tell the user a card is displayed. "
+                    "Call it again with candidates=[{\"source_id\": ..., \"table_key\": ...}] "
+                    "copied exactly from find_data / list_data / describe_data results. "
+                    "If no table matches, say so plainly instead.\n\n"
+                    f"{self._format_valid_sources_hint()}"
+                )
+            }
 
         resolvable = [c for c in candidates if not c.get("resolution_error")]
         if candidates and not resolvable:

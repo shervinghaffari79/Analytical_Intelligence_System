@@ -112,6 +112,29 @@ charts as they are produced. Charts are rendered with the same engine
 It is built with its own config (`vite.chat.config.ts`) so the two pages never
 share chunks.
 
+## Serving on port 5000 / on the internet
+
+By default the app listens on `127.0.0.1:5567`. To serve it on port 5000 on every network
+interface of a server (reachable at `http://<server-ip>:5000`):
+
+```bash
+PORT=5000 HOST=0.0.0.0 DF_ACCESS_PASSWORD='choose-a-long-password' uv run data_formulator
+# equivalent flags: uv run data_formulator --host 0.0.0.0 --port 5000
+```
+
+- `PORT` (or `DF_PORT`) sets the default port, `HOST` the default interface; the flags win.
+- `DF_ACCESS_PASSWORD` turns on a shared-password prompt (HTTP Basic, any username) for every
+  page and API call. **Set it whenever the port is reachable from outside**: the app runs
+  model-written Python on the server, so an open port is an open shell. Without it the server
+  logs a security warning at start-up. For more than one person use a real identity provider
+  (see the authentication section of `.env.template`) or an authenticating reverse proxy.
+- Open the firewall / cloud security group for TCP 5000. Plain HTTP sends the password in
+  clear text; put TLS in front (Caddy, nginx, a cloud load balancer) for anything but a trial.
+- **Google Colab** gives notebooks no public IP address and no inbound ports, so
+  `<ip>:5000` is never reachable from outside. Use Colab's own proxy (the notebook prints
+  links) or the notebook's optional public-URL cell, which opens a tunnel to port 5000.
+- The conversational UI is at `/chat`, the workspace app at `/`.
+
 ## Build for Production
 
 - **Build the frontend and then the backend**

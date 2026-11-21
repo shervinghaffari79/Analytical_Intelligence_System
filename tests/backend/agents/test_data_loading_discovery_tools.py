@@ -273,11 +273,14 @@ class TestProposeLoadPlan:
         assert action["reasoning"] == "Orders + customer dimension"
         assert [candidate["selected"] for candidate in action["candidates"]] == [True, False]
 
-    def test_empty_candidates_returns_empty_action(self) -> None:
+    def test_empty_candidates_is_an_error_the_model_sees(self) -> None:
+        # An empty plan shows no card. Reporting success made the model tell the
+        # user "a card is shown" while the user had no Load button to press.
         agent = DataLoadingAgent(client=None, workspace=_FakeWorkspace())
-        result = agent._tool_propose_load_plan({"candidates": []})
-        assert result["actions"][0]["type"] == "load_plan"
-        assert result["actions"][0]["candidates"] == []
+        for args in ({"candidates": []}, {}, {"candidates": ["not-a-dict"]}):
+            result = agent._tool_propose_load_plan(args)
+            assert "actions" not in result
+            assert "NO card was shown" in result["error"]
 
     def test_selects_first_resolvable_when_agent_selects_none(self, tmp_path: Path) -> None:
         save_catalog(tmp_path, "pg_prod", [

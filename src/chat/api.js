@@ -49,11 +49,25 @@ export function errorText(err) {
   return (err.message || String(err)) + detail;
 }
 
+// The agents answer in the language named by Accept-Language. That should be the
+// language the person is writing in, not the browser's UI language: a Persian
+// question asked from an English browser must get a Persian answer.
+let replyLanguage = null;
+const ARABIC_SCRIPT = /[\u0600-\u06FF\u0750-\u077F]/g;
+export function setReplyLanguageFrom(text) {
+  const letters = String(text || '').replace(/[^\p{L}]/gu, '');
+  const arabic = (String(text || '').match(ARABIC_SCRIPT) || []).length;
+  // Persian vs Arabic: ی/ک/پ/چ/گ/ژ are Persian-only letters.
+  replyLanguage = letters && arabic / letters.length > 0.3
+    ? (/[\u06CC\u06A9\u067E\u0686\u06AF\u0698]/.test(text) ? 'fa' : 'ar')
+    : null;
+}
+
 function headers(extra) {
   const h = new Headers(extra || {});
   h.set('X-Identity-Id', 'browser:' + getBrowserId());
   h.set('X-Workspace-Id', getWorkspaceId());
-  h.set('Accept-Language', (navigator.language || 'en').split('-')[0]);
+  h.set('Accept-Language', replyLanguage || (navigator.language || 'en').split('-')[0]);
   return h;
 }
 

@@ -26,3 +26,10 @@ export const fmtCell = v => {
   const s = String(v);
   return s.length > 120 ? s.slice(0, 119) + '…' : s;
 };
+
+/** Stop `snake_case` names from being read as emphasis: `describe_data … propose_load_plan`
+ * would otherwise render as "describedata … proposeloadplan". Code spans are left alone. */
+export const escapeIntrawordUnderscores = text => String(text || '')
+  .split(/(```[\s\S]*?```|`[^`\n]*`)/)
+  .map((part, i) => (i % 2 ? part : part.replace(/([\p{L}\p{N}])_(?=[\p{L}\p{N}])/gu, '$1\\_')))
+  .join('');

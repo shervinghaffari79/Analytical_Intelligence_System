@@ -38,6 +38,7 @@ LANGUAGE_DISPLAY_NAMES: dict[str, str] = {
     "pt": "Portuguese (Português)",
     "ru": "Russian (Русский)",
     "ar": "Arabic (العربية)",
+    "fa": "Persian / Farsi (فارسی)",
     "hi": "Hindi (हिन्दी)",
     "th": "Thai (ไทย)",
     "vi": "Vietnamese (Tiếng Việt)",
@@ -58,6 +59,14 @@ LANGUAGE_EXTRA_RULES: dict[str, str] = {
         "- Use Simplified Chinese (简体中文), NOT Traditional Chinese (繁體中文).\n"
         "- Keep technical terms natural: prefer widely-used Chinese equivalents "
         "(e.g., 销售额, 利润率) over awkward literal translations."
+    ),
+    "fa": (
+        "\n\nAdditional rules for Persian:\n"
+        "- Write in Persian (Farsi) script, not Arabic: use ی and ک, and the zero-width "
+        "non-joiner (‌) where Persian orthography calls for it.\n"
+        "- Reply in Persian from the first sentence; do not mix in English prose. Keep table "
+        "names, column names, code, tool names and chart type names exactly as they are.\n"
+        "- Never remark on the language the user wrote in; just answer in it."
     ),
     "ja": (
         "\n\nAdditional rules for Japanese:\n"

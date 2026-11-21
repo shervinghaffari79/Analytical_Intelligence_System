@@ -83,23 +83,26 @@ export default function App() {
   useEffect(() => { stickRef.current = true; }, [activeId]);
 
   /* ---- sending ---- */
-  const sendQuery = useCallback((text, files = [], forcedMode) => {
+  const sendQuery = useCallback((text, files = [], forcedMode, opts = {}) => {
     const trimmed = (text || '').trim();
     if (!trimmed && files.length === 0) return;
     const existing = convRef.current.find(c => c.id === activeIdRef.current);
-    if (existing && existing.messages.some(m => m.role === 'assistant' && m.status === 'running')) return;
+    // `auto` turns (an agent handing over to another) start the moment the previous
+    // one finishes, before React has re-rendered its status.
+    if (!opts.auto && existing && existing.messages.some(m => m.role === 'assistant' && m.status === 'running')) return;
 
     const convId = existing ? existing.id : newId();
     const userMsg = { id: msgId(), role: 'user', text: trimmed, ts: Date.now(), attachments: files.map(f => ({ name: f.name, size: f.size })) };
     const asstId = msgId();
     const asst = { id: asstId, role: 'assistant', ts: Date.now(), startedAt: Date.now(), status: 'running', agent: '', question: trimmed, steps: [], blocks: [] };
     const history = existing ? existing.messages : [];
+    const added = opts.auto ? [{ ...asst, auto: true }] : [userMsg, asst];
 
     setConversations(prev => {
       const convs = [...prev];
       const idx = convs.findIndex(c => c.id === convId);
-      if (idx >= 0) convs[idx] = { ...convs[idx], messages: [...convs[idx].messages, userMsg, asst], updatedAt: Date.now() };
-      else convs.unshift({ id: convId, title: (trimmed || files[0].name).slice(0, 70), createdAt: Date.now(), updatedAt: Date.now(), messages: [userMsg, asst] });
+      if (idx >= 0) convs[idx] = { ...convs[idx], messages: [...convs[idx].messages, ...added], updatedAt: Date.now() };
+      else convs.unshift({ id: convId, title: (trimmed || files[0].name).slice(0, 70), createdAt: Date.now(), updatedAt: Date.now(), messages: added });
       return convs;
     });
     setActiveId(convId);
@@ -114,8 +117,15 @@ export default function App() {
     runTurn({
       text: trimmed, files, mode: forcedMode || modeRef.current, history, model: modelRef.current, agentMode: agentModeRef.current,
       tables: tablesRef.current, update, refreshTables, signal: controller.signal,
-    }).finally(() => { aborts.current.delete(asstId); refreshTables(); });
+    }).then(result => {
+      aborts.current.delete(asstId);
+      refreshTables();
+      // The analyst needs data it does not have: actually start the data agent.
+      if (result && result.delegate && result.status === 'done') sendRef.current(result.delegate, [], 'data', { auto: true });
+    });
   }, [refreshTables]);
+  const sendRef = useRef(null);
+  sendRef.current = sendQuery;
 
   // Latest values for the stable `sendQuery` callback.
   const activeIdRef = useRef(activeId); activeIdRef.current = activeId;
@@ -134,11 +144,30 @@ export default function App() {
     })));
   }, []);
 
+  // What the person actually asked for before a plan card appeared: their last few
+  // messages, not just the latest (which is often "I don't see the button").
+  const goalBefore = (messages, assistantId) => {
+    const idx = messages.findIndex(m => m.id === assistantId);
+    const asks = [];
+    for (let i = (idx < 0 ? messages.length : idx) - 1; i >= 0 && asks.length < 4; i--) {
+      const m = messages[i];
+      if (m.role === 'assistant' && (m.blocks || []).some(b => b.type === 'load_plan' && b.status === 'loaded')) break;
+      if (m.role === 'user' && (m.text || '').trim().length > 1 && !asks.includes(m.text.trim())) asks.unshift(m.text.trim());
+    }
+    return asks;
+  };
+
   // A card finished loading data or connecting a source: carry on with the task.
-  const onLoaded = useCallback(async (names, question, connected) => {
+  const onLoaded = useCallback(async (names, analyzeMessageId, connected) => {
     await refreshTables();
-    if (connected) sendQuery(`I connected "${connected.name}". Continue with what I asked for.`, [], 'data');
-    else if (question) sendQuery(question, [], 'analyst');
+    if (connected) { sendQuery(`I connected "${connected.name}". Continue with what I asked for.`, [], 'data'); return; }
+    if (!analyzeMessageId) return;
+    const conv = convRef.current.find(c => c.id === activeIdRef.current);
+    const asks = conv ? goalBefore(conv.messages, analyzeMessageId) : [];
+    const list = names && names.length ? ` (${names.join(', ')})` : '';
+    sendQuery(asks.length
+      ? `Using the tables I just loaded${list}, do what I asked:\n${asks.map(a => `- ${a}`).join('\n')}`
+      : `Give me an overview of the tables I just loaded${list} with the most informative chart.`, [], 'analyst');
   }, [refreshTables, sendQuery]);
 
   const ask = useCallback((text, forcedMode) => sendQuery(text, [], forcedMode), [sendQuery]);

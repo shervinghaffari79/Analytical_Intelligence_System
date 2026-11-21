@@ -18,7 +18,7 @@
  * Block types: text | report | chart | load_plan | preview | connect_form |
  *              questions | error | notice
  */
-import { api, apiForm, stream, errorText, URLS } from './api.js';
+import { api, apiForm, stream, errorText, setReplyLanguageFrom, URLS } from './api.js';
 
 const TABULAR = /\.(csv|tsv|xlsx|xls|json|parquet)$/i;
 const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
@@ -69,10 +69,12 @@ function resultDetail(ev) {
 
 /* ---------- message mutation helpers (immutable) ---------- */
 
-const appendText = (m, type, text) => {
+const appendText = (m, type, text, gap) => {
   const blocks = m.blocks.slice();
   const last = blocks[blocks.length - 1];
-  if (last && last.type === type) blocks[blocks.length - 1] = { ...last, text: last.text + text };
+  // `gap`: tool calls happened since the previous text, so this is a new
+  // paragraph. Without it the segments run together ("…کنیم:بیایید…").
+  if (last && last.type === type) blocks[blocks.length - 1] = { ...last, text: last.text + (gap && text.trim() ? '\n\n' : '') + text };
   else blocks.push({ type, text });
   return { ...m, blocks };
 };
@@ -124,12 +126,14 @@ function actionBlocks(actions, seen) {
 
 async function runDataAgent({ messages, model, tables, update, signal }) {
   const seen = new Set();
+  let gap = false;
   for await (const ev of stream(URLS.DATA_LOADING_CHAT, {
     model, messages, workspace_tables: tables.map(t => t.name),
   }, signal)) {
     switch (ev.type) {
-      case 'text_delta': update(m => appendText(m, 'text', ev.content || '')); break;
+      case 'text_delta': { const g = gap; if ((ev.content || '').trim()) gap = false; update(m => appendText(m, 'text', ev.content || '', g)); break; }
       case 'tool_start':
+        gap = true;
         update(m => addStep(m, { tool: ev.tool, label: TOOL_LABELS[ev.tool] || ev.tool, detail: toolDetail(ev.tool, ev.args) }));
         break;
       case 'tool_result': {
@@ -204,8 +208,10 @@ function chartBlock(ev) {
 async function runAnalyst({ question, history, model, agentMode, tables, images, update, signal }) {
   let sawReport = false;
   let fatal = null;
+  let delegate = null;
+  let gap = false;
   for await (const ev of stream(URLS.ANALYST, {
-    model, agent_mode: agentMode === 'mini' ? 'mini' : 'standard', max_iterations: 5,
+    model, agent_mode: agentMode === 'mini' ? 'mini' : 'standard', max_iterations: 8,
     input_tables: tables.map(t => ({ name: t.name })), user_question: question,
     focused_thread: focusedThread(history),
     attached_images: images && images.length ? images : undefined,
@@ -215,6 +221,7 @@ async function runAnalyst({ question, history, model, agentMode, tables, images,
         update(m => settleSteps(addStep(m, { label: 'Thinking', detail: ev.content || '', status: 'done' })));
         break;
       case 'action':
+        gap = true;
         update(m => addStep(settleSteps(m), {
           tool: ev.action, label: ACTION_LABELS[ev.action] || ev.action,
           detail: [ev.display_instruction, (ev.input_tables || []).length ? 'tables: ' + ev.input_tables.join(', ') : ''].filter(Boolean).join('\n'),
@@ -234,19 +241,25 @@ async function runAnalyst({ question, history, model, agentMode, tables, images,
         update(m => addBlock(finishStep(m, 'visualize', { status: 'done', detail: block.code }), block));
         break;
       }
-      case 'text_delta':
+      case 'text_delta': {
         sawReport = true;
-        update(m => appendText(m, ev.channel === 'report' ? 'report' : 'text', ev.content || ''));
+        const g = gap; if ((ev.content || '').trim()) gap = false;
+        update(m => appendText(m, ev.channel === 'report' ? 'report' : 'text', ev.content || '', g));
         break;
+      }
       case 'interact':
         update(m => addBlock(settleSteps(m), { type: 'questions', questions: ev.questions || [], thought: ev.thought || '' }));
         break;
-      case 'delegate':
+      case 'delegate': {
+        // The analyst asked for data it does not have. Hand the request to the
+        // data agent for real (the caller starts that turn); announcing a
+        // hand-off that never happens left the analyst "waiting" forever.
+        delegate = ev.delegate_prompt || ev.prompt || question;
         update(m => addBlock(settleSteps(m), {
-          type: 'notice', text: ev.delegate_prompt || ev.reason || 'This needs data that is not loaded yet.',
-          action: 'Find data', ask: ev.delegate_prompt || question, askMode: 'data',
+          type: 'notice', text: 'The data for this is not loaded yet — handing over to the data agent to find it.',
         }));
         break;
+      }
       case 'error':
         // Usually recoverable (the agent retries); shown in the trace, and only
         // surfaced as a block if the run then ends without anything to show.
@@ -254,9 +267,16 @@ async function runAnalyst({ question, history, model, agentMode, tables, images,
         update(m => finishStep(m, null, { status: 'error', detail: 'Error: ' + short(fatal, 500) }));
         break;
       case 'completion': {
-        const summary = ev.content && ev.content.summary;
+        const hitLimit = ev.status === 'max_iterations';
+        const summary = hitLimit ? '' : (ev.content && ev.content.summary);
         update(m => {
           let next = settleSteps(m);
+          if (hitLimit) {
+            next = addBlock(next, {
+              type: 'notice', text: 'I reached the step limit for this run.',
+              action: 'Continue', ask: 'Continue the analysis from where you stopped.', askMode: 'analyst',
+            });
+          }
           if (summary && !sawReport && !next.blocks.some(b => b.type === 'text' && b.text.includes(summary))) {
             next = appendText(next, 'text', summary);
           }
@@ -269,6 +289,7 @@ async function runAnalyst({ question, history, model, agentMode, tables, images,
       default: break;
     }
   }
+  return { delegate };
 }
 
 /* ---------- attachments ---------- */
@@ -324,6 +345,10 @@ export function chooseAgent({ text, mode, tables, hasTabular }) {
 export async function runTurn({ text, files = [], mode, history, model, agentMode, tables, update, refreshTables, signal }) {
   const started = Date.now();
   let status = 'done';
+  let delegate = null;
+  // Answer in the language the person is writing in.
+  const lastUser = [...history].reverse().find(m => m.role === 'user');
+  setReplyLanguageFrom(text || (lastUser && lastUser.text) || '');
   try {
     if (!model) throw new Error('No model is configured on the server. Set one in .env (for example LOCAL_ENABLED=true) and restart.');
     let question = text;
@@ -347,14 +372,15 @@ export async function runTurn({ text, files = [], mode, history, model, agentMod
       await runDataAgent({ messages: msgs, model, tables: current, update, signal });
     } else {
       if (!current.length) throw new Error('There is no data loaded yet. Ask me to find or load data first, or attach a file.');
-      await runAnalyst({ question, history, model, agentMode, tables: current, images, update, signal });
+      const out = await runAnalyst({ question, history, model, agentMode, tables: current, images, update, signal });
+      delegate = out && out.delegate;
     }
   } catch (err) {
     if (err && err.name === 'AbortError') status = 'stopped';
     else { status = 'error'; update(m => addBlock(m, { type: 'error', text: errorText(err) })); }
   }
   update(m => ({ ...settleSteps(m), status, seconds: Math.max(1, Math.round((Date.now() - started) / 1000)) }));
-  return status;
+  return { status, delegate };
 }
 
 /* ---------- actions triggered from cards ---------- */

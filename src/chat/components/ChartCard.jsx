@@ -19,9 +19,10 @@ const NUM_STR = /^[\d\u06f0-\u06f9\u0660-\u0669]+$/;
  * The chart engine guesses types from values: "1402/03/14" becomes a Gregorian
  * date (and is labelled "March"), and the text "1401" becomes a number. Mark
  * such fields as categories unless the backend already said what they are. */
-function withJalaliAwareTypes(semantic, columns, rows) {
+function withJalaliAwareTypes(semantic, columns, rows, encodings) {
   const out = { ...(semantic || {}) };
   const sample = rows.slice(0, 300);
+  const onX = new Set(['x', 'column'].map(ch => fieldOf((encodings || {})[ch])).filter(Boolean));
   for (const col of columns) {
     if (out[col]) continue;
     const vals = sample.map(r => r[col]).filter(v => v !== null && v !== undefined && v !== '');
@@ -31,6 +32,8 @@ function withJalaliAwareTypes(semantic, columns, rows) {
     } else if (vals.every(v => Number.isInteger(v))) {
       const lo = Math.min(...vals), hi = Math.max(...vals);
       if ((lo >= 1300 && hi <= 1499) || (lo >= 13000101 && hi <= 14991231)) out[col] = 'Category';
+      // Gregorian years: without this the axis reads "2,016 / 2,016.5 / 2,017".
+      else if (lo >= 1800 && hi <= 2100 && (/year|yr|سال/i.test(col) || onX.has(col))) out[col] = 'Year';
     }
   }
   return out;
@@ -83,7 +86,7 @@ function DataTable({ columns, rows, total }) {
 
 function ChartCardInner({ block, onAsk, showToast }) {
   const { title, rows, columns, displayNames, config, code, rowCount } = block;
-  const semantic = useMemo(() => withJalaliAwareTypes(block.semantic, columns, rows), [block.semantic, columns, rows]);
+  const semantic = useMemo(() => withJalaliAwareTypes(block.semantic, columns, rows, block.encodings), [block.semantic, columns, rows, block.encodings]);
   const initial = useMemo(() => normalizeType(block.chartType, block.encodings, rows, semantic), [block.chartType, block.encodings, rows, semantic]);
   const [type, setType] = useState(initial.type);
   const [encodings, setEncodings] = useState(initial.encodings);

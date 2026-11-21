@@ -23,6 +23,11 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [tables, setTables] = useState([]);
   const [models, setModels] = useState([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  // Resolves once the server's model list has arrived, so a message sent in the first
+  // second is held briefly instead of failing with "No model is configured".
+  const modelsReady = useRef(null);
+  if (!modelsReady.current) { let resolve; const promise = new Promise(r => { resolve = r; }); modelsReady.current = { promise, resolve }; }
   const [modelId, setModelId] = useState(prefs.modelId || '');
   const [agentMode, setAgentMode] = useState(prefs.agentMode || 'standard');
   const [mode, setMode] = useState('auto');
@@ -68,8 +73,12 @@ export default function App() {
 
   useEffect(() => {
     refreshTables();
-    api(URLS.LIST_MODELS).then(list => setModels(Array.isArray(list) ? list : [])).catch(err => setServerError(errorText(err)));
+    api(URLS.LIST_MODELS)
+      .then(list => setModels(Array.isArray(list) ? list : []))
+      .catch(err => setServerError(errorText(err)))
+      .finally(() => setModelsLoaded(true));
   }, [refreshTables]);
+  useEffect(() => { if (modelsLoaded) modelsReady.current.resolve(); }, [modelsLoaded]);
 
   /* ---- scrolling: follow the stream unless the user scrolled up ---- */
   const onScroll = () => {
@@ -114,10 +123,10 @@ export default function App() {
     })));
     const controller = new AbortController();
     aborts.current.set(asstId, controller);
-    runTurn({
+    modelsReady.current.promise.then(() => runTurn({
       text: trimmed, files, mode: forcedMode || modeRef.current, history, model: modelRef.current, agentMode: agentModeRef.current,
       tables: tablesRef.current, update, refreshTables, signal: controller.signal,
-    }).then(result => {
+    })).then(result => {
       aborts.current.delete(asstId);
       refreshTables();
       // The analyst needs data it does not have: actually start the data agent.

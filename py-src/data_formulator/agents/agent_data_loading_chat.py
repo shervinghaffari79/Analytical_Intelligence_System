@@ -1744,6 +1744,7 @@ class DataLoadingAgent:
         user_home = getattr(self.workspace, "user_home", None)
         if not user_home:
             return {"sources": []}
+        self._ensure_builtin_catalogs(user_home)
 
         source_id = (args.get("source_id") or "").strip()
         if not source_id:
@@ -1781,6 +1782,8 @@ class DataLoadingAgent:
             CatalogSearchError,
             search_catalog_cache,
         )
+
+        self._ensure_builtin_catalogs(getattr(self.workspace, "user_home", None))
 
         query = (args.get("query") or "").strip()
         if not query:
@@ -2400,6 +2403,17 @@ class DataLoadingAgent:
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensure_builtin_catalogs(user_home) -> None:
+        """Cache the catalog of any no-auth admin connector that is not cached yet."""
+        if not user_home:
+            return
+        try:
+            from data_formulator.agents.context import _ensure_no_auth_catalogs_cached
+            _ensure_no_auth_catalogs_cached(user_home)
+        except Exception:
+            logger.debug("Could not seed built-in catalogs", exc_info=True)
+
     def _build_system_prompt(self, last_user_text: str = ""):
         """Build the system prompt with current workspace context.
 
@@ -2422,6 +2436,10 @@ class DataLoadingAgent:
             )
 
         user_home = getattr(self.workspace, "user_home", None)
+        # Register zero-config sources (the built-in sample datasets) before listing
+        # them. Without this a fresh user is told "no data source is connected" until
+        # something else happens to populate the catalog.
+        self._ensure_builtin_catalogs(user_home)
         connector_summary = _build_connector_summary_block(user_home)
 
         from datetime import datetime

@@ -350,6 +350,15 @@ _safety_checks()
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
+def _debug_enabled(dev: bool, host: str) -> bool:
+    """Flask's debug mode only for local development.
+
+    ``--dev`` also means "do not open a browser", so servers use it; but debug mode
+    exposes an interactive debugger on errors, which must never face the network.
+    """
+    return bool(dev) and host in _LOOPBACK_HOSTS
+
+
 def _access_password() -> str:
     """The shared access password, read per request so it can be set late."""
     return os.environ.get("DF_ACCESS_PASSWORD", "")
@@ -602,7 +611,10 @@ def run_app():
     if not args.dev:
         threading.Timer(1.5, lambda: webbrowser.open(url, new=2)).start()
 
-    debug_mode = args.dev
+    debug_mode = _debug_enabled(args.dev, args.host)
+    if args.dev and not debug_mode:
+        print("  Debugger and auto-reload are off because the server is reachable from other "
+              "machines (the Werkzeug debugger would allow remote code execution).", flush=True)
     app.run(host=args.host, port=args.port, debug=debug_mode, use_reloader=debug_mode)
 
 if __name__ == '__main__':

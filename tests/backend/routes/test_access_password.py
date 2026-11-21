@@ -60,3 +60,12 @@ def test_port_defaults_from_environment():
     with patch.dict(os.environ, {}, clear=False), patch("sys.argv", ["data_formulator", "-p", "6001"]):
         os.environ.pop("PORT", None)
         assert parse_args().port == 6001
+
+
+def test_debugger_is_never_enabled_for_a_network_facing_server():
+    from data_formulator.app import _debug_enabled
+
+    assert _debug_enabled(True, "127.0.0.1") and _debug_enabled(True, "localhost")
+    assert not _debug_enabled(True, "0.0.0.0")
+    assert not _debug_enabled(True, "203.0.113.7")
+    assert not _debug_enabled(False, "127.0.0.1")

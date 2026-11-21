@@ -196,3 +196,9 @@ def test_system_prompt_forbids_fabricated_data_and_false_load_claims():
     assert "NEVER invent, estimate or recall data from memory" in SYSTEM_PROMPT
     assert "A load plan only PROPOSES tables" in SYSTEM_PROMPT
     assert "never tell the user a" in SYSTEM_PROMPT
+
+
+def test_prompt_tells_the_agent_to_use_worked_examples_and_declared_references():
+    from data_formulator.agents.agent_data_loading_chat import SYSTEM_PROMPT
+    assert 'Worked example' in SYSTEM_PROMPT and "include ALL of them" in SYSTEM_PROMPT
+    assert "references … (declared)" in SYSTEM_PROMPT

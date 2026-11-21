@@ -102,7 +102,7 @@ _default_ws_backend = os.environ.get('WORKSPACE_BACKEND', 'local')
 if _disable_database and _default_ws_backend == 'local':
     _default_ws_backend = 'ephemeral'
 app.config['CLI_ARGS'] = {
-    'host': os.environ.get('HOST', '127.0.0.1'),
+    'host': os.environ.get('HOST', '0.0.0.0'),
     'sandbox': os.environ.get('SANDBOX', 'local'),
     'disable_display_keys': _disable_database or os.environ.get('DISABLE_DISPLAY_KEYS', 'false').lower() == 'true',
     'disable_data_connectors': _disable_database or os.environ.get('DISABLE_DATA_CONNECTORS', 'false').lower() == 'true',
@@ -497,11 +497,11 @@ def get_app_config():
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Data Formulator")
     parser.add_argument("-p", "--port", type=int,
-        default=int(os.environ.get('PORT') or os.environ.get('DF_PORT') or 5567),
-        help="The port number you want to use (default: $PORT, else 5567)")
-    parser.add_argument("--host", type=str, default=os.environ.get('HOST', '127.0.0.1'),
-        help="Network interface to bind to (default: 127.0.0.1). "
-             "Use 0.0.0.0 to accept connections from other machines.")
+        default=int(os.environ.get('PORT') or os.environ.get('DF_PORT') or 5000),
+        help="The port number you want to use (default: $PORT, else 5000)")
+    parser.add_argument("--host", type=str, default=os.environ.get('HOST', '0.0.0.0'),
+        help="Network interface to bind to (default: 0.0.0.0, all interfaces). "
+             "Use 127.0.0.1 to accept local connections only.")
     parser.add_argument("--sandbox", type=str, default=os.environ.get('SANDBOX', 'local'),
         choices=['local', 'docker'],
         help="Python code execution backend: 'local' (default, isolated subprocess with audit hooks), "
@@ -599,6 +599,14 @@ def run_app():
     print(f"Ready! Open {url} in your browser.", flush=True)
     if args.host not in _LOOPBACK_HOSTS:
         print(f"  Listening on {args.host}:{args.port} — reachable from other machines.", flush=True)
+        if args.host in ("0.0.0.0", "::"):
+            import socket
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as _s:
+                    _s.connect(("192.0.2.1", 9))  # no packet is sent; picks the outbound interface
+                    print(f"  Server address: http://{_s.getsockname()[0]}:{args.port}", flush=True)
+            except OSError:
+                pass
         if _access_password():
             print("  Access is protected by DF_ACCESS_PASSWORD (HTTP Basic, any username).", flush=True)
         else:

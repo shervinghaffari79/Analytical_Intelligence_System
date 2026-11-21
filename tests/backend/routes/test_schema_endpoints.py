@@ -22,7 +22,7 @@ def client(tmp_path, monkeypatch):
 
 
 def post(client, path, payload=None, **kw):
-    resp = client.post(f"/api/connectors/schema/{path}", json=payload, headers={"X-Workspace-Id": "schema_test"}, **kw)
+    resp = client.post(f"/api/connectors/schema/{path}", json=payload, headers={"X-Workspace-Id": "schema_test", "X-Identity-Id": "browser:schematest"}, **kw)
     body = json.loads(resp.data)
     assert resp.status_code == 200 and body["status"] == "success", body
     return body["data"]
@@ -69,7 +69,7 @@ def test_bad_files_are_reported_not_saved(client):
 
 def test_multipart_upload_and_cp1256_csv(client):
     csv_text = "table,column,description\nUS Income,pct,درصد خانوارها\n"
-    resp = client.post("/api/connectors/schema/save", headers={"X-Workspace-Id": "schema_test"},
+    resp = client.post("/api/connectors/schema/save", headers={"X-Workspace-Id": "schema_test", "X-Identity-Id": "browser:schematest"},
                        data={"connector_id": SOURCE, "file": (io.BytesIO(csv_text.encode("cp1256")), "dictionary.csv")},
                        content_type="multipart/form-data")
     data = json.loads(resp.data)["data"]

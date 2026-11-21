@@ -57,12 +57,12 @@ RUN pip install --no-cache-dir .
 RUN mkdir -p "${DATA_FORMULATOR_HOME}" && chown -R appuser:appuser /app "${DATA_FORMULATOR_HOME}"
 USER appuser
 
-EXPOSE 5567
+EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -f http://localhost:5567/ || exit 1
+  CMD curl -f http://localhost:5000/ || exit 1
 
 # Run the app on all interfaces so Docker port-forwarding works.
 # We do not pass --dev so Flask runs in production mode (no debugger/reloader).
 # webbrowser.open() fails silently in a headless container, which is harmless.
-ENTRYPOINT ["python", "-m", "data_formulator", "--host", "0.0.0.0", "--port", "5567"]
+ENTRYPOINT ["python", "-m", "data_formulator", "--host", "0.0.0.0", "--port", "5000"]

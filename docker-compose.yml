@@ -6,7 +6,7 @@
 # Quick start:
 #   1. Copy .env.template to .env and fill in your API keys.
 #   2. docker compose up --build
-#   3. Open http://localhost:5567 in your browser.
+#   3. Open http://localhost:5000 in your browser.
 
 services:
   data-formulator:
@@ -15,7 +15,7 @@ services:
       dockerfile: Dockerfile
     image: data-formulator:latest
     ports:
-      - "5567:5567"
+      - "5000:5000"
     env_file:
       - .env
     volumes:

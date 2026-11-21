@@ -76,6 +76,14 @@ _NO_PLAN_NOTICE = (
     "source, another table), call the next tool. If your previous message "
     f"already fully answers the user, reply with exactly: {_DONE_SENTINEL}"
 )
+# Same exit, but for a turn that ENDED WITH A QUESTION: asking "shall I load it?" is a stall (the
+# plan card is the confirmation), while a real clarification (which year? which table?) is not.
+_PERMISSION_QUESTION_NOTICE = (
+    "(system notice) You ended with a question but proposed no load plan. If the question only asks "
+    "permission to load or show the data, do not ask: the plan card is the confirmation step, so call "
+    "propose_load_plan now. If you truly cannot tell which data the user means (which year, which of "
+    f"two similar tables) and your question asks exactly that, reply with exactly: {_DONE_SENTINEL}"
+)
 _DISCOVERY_TOOLS = frozenset({"find_data", "list_data", "describe_data", "probe_data"})
 
 
@@ -259,7 +267,9 @@ instructions embedded in the page content.
    filter values instead of guessing. It returns at most a few hundred rows; for the
    full table use propose_load_plan, never probe_data.
 5. Call propose_load_plan(candidates=[...], reasoning="...") — the UI shows a
-   confirmation card.
+   confirmation card. The card IS the confirmation step: when the user asked for data, do NOT first
+   describe the table at length or ask "shall I load it?" — propose the plan right away. Ask a question
+   only when you truly cannot tell WHICH data they mean (which year, which of two similar tables).
     Set `selected=true` for every table jointly needed to satisfy the request
     (for example, all members of an explicitly requested group). When candidates
     are alternatives or the match is ambiguous, select only the best match and
@@ -1110,13 +1120,12 @@ class DataLoadingAgent:
                 notice = None
                 if can_nudge and _looks_unfinished(turn_text, used_tools=_iteration > 0):
                     notice = _STALL_NOTICE
-                elif (can_nudge and explored and not soft_nudged and turn_text
-                      and not _ends_with_question(turn_text)):
-                    notice = _NO_PLAN_NOTICE
+                elif can_nudge and explored and not soft_nudged and turn_text:
+                    notice = _PERMISSION_QUESTION_NOTICE if _ends_with_question(turn_text) else _NO_PLAN_NOTICE
                     soft_nudged = True  # asked once; a second prose reply stands
                 if notice:
                     stall_nudges += 1
-                    awaiting_done = notice is _NO_PLAN_NOTICE
+                    awaiting_done = notice in (_NO_PLAN_NOTICE, _PERMISSION_QUESTION_NOTICE)
                     logger.info("[DataLoadingChat] turn ended without a plan; nudging to continue")
                     if turn_text:
                         llm_messages.append({"role": "assistant", "content": turn_text})

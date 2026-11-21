@@ -2029,13 +2029,14 @@ class DataLoadingAgent:
         except Exception:
             logger.debug("probe_data: load_catalog failed", exc_info=True)
             return None
-        for t in catalog:
-            if t.get("table_key") == table_key:
-                path = t.get("path")
-                if path:
-                    return list(path)
-                name = t.get("name")
-                return [name] if name else None
+        from data_formulator.datalake.catalog_cache import resolve_catalog_entry
+        t, _ = resolve_catalog_entry(catalog, table_key)
+        if t is not None:
+            path = t.get("path")
+            if path:
+                return list(path)
+            name = t.get("name")
+            return [name] if name else None
         return None
 
     def _tool_probe_data(self, args):
@@ -2381,6 +2382,8 @@ class DataLoadingAgent:
             )
 
         catalog_entry = self._lookup_catalog_entry(source_id, table_key)
+        if catalog_entry and catalog_entry.get("table_key"):
+            table_key = str(catalog_entry["table_key"])  # a short name resolves to the real key
         if resolution_error is None and not catalog_entry:
             if not table_key:
                 resolution_error = "missing table_key"
@@ -2454,17 +2457,10 @@ class DataLoadingAgent:
             from pathlib import Path
             from data_formulator.datalake.catalog_cache import load_catalog
 
-            for table in load_catalog(Path(user_home), source_id) or []:
-                meta = table.get("metadata") or {}
-                identifiers = {
-                    str(table.get("table_key") or ""),
-                    str(meta.get("uuid") or ""),
-                    str(meta.get("dataset_id") or ""),
-                    str(meta.get("_source_name") or ""),
-                    str(table.get("name") or ""),
-                }
-                if table_key in identifiers:
-                    return table
+            from data_formulator.datalake.catalog_cache import resolve_catalog_entry
+            entry, _ = resolve_catalog_entry(load_catalog(Path(user_home), source_id) or [], table_key)
+            if entry is not None:
+                return entry
         except Exception:
             logger.debug("Could not resolve load plan candidate from catalog", exc_info=True)
         return None

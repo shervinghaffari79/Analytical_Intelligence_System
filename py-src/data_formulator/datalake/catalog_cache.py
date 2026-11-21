@@ -595,3 +595,45 @@ def list_path_children(
             + "') to search this subtree."
         )
     return result
+
+
+def resolve_catalog_entry(
+    tables: list[dict[str, Any]], key: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Find a catalog table from a key a model or person typed.
+
+    Order: exact ``table_key`` / name / source name, then case-insensitive, then the
+    last path segment when it is unique (``tbl_faktor`` for ``db.tbl_faktor``). Models
+    copy short names from descriptions, glossaries and their own memory; rejecting them
+    cost a round trip each and sometimes ended a turn without a plan.
+
+    Returns ``(entry, suggestions)``: *entry* is None when nothing (or more than one
+    table) matches, and *suggestions* then lists close or competing keys.
+    """
+    import difflib
+
+    key = str(key or "").strip()
+    if not key:
+        return None, []
+
+    def ids(t: dict[str, Any]) -> list[str]:
+        meta = t.get("metadata") or {}
+        return [str(x) for x in (t.get("table_key"), t.get("name"), meta.get("_source_name"),
+                                 meta.get("uuid"), meta.get("dataset_id")) if x not in (None, "")]
+
+    low = key.lower()
+    tail = low.split(".")[-1]
+    stages = (
+        lambda t: key == str(t.get("table_key") or ""),
+        lambda t: key in ids(t),
+        lambda t: low in (i.lower() for i in ids(t)),
+        lambda t: any(i.split(".")[-1].lower() == tail for i in ids(t)),
+    )
+    for stage in stages:
+        hits = {id(t): t for t in tables if stage(t)}
+        if len(hits) == 1:
+            return next(iter(hits.values())), []
+        if len(hits) > 1:  # several tables answer to this name: never guess
+            return None, sorted(str(t.get("table_key") or t.get("name") or "") for t in hits.values())[:6]
+    keys = sorted({str(t.get("table_key") or t.get("name") or "") for t in tables})
+    return None, difflib.get_close_matches(key, keys, n=4, cutoff=0.5)

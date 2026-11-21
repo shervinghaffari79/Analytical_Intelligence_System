@@ -472,6 +472,17 @@ def visible_tables(tables: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def build_overview(schema: dict[str, Any], tables: list[dict[str, Any]], *, max_chars: int = MAX_OVERVIEW_CHARS) -> str:
     """Compact, authoritative overview of a documented source for the system prompt."""
     lines: list[str] = []
+    # Models copy table names from glossary and examples into tool calls, so show the
+    # exact key to use (short names still resolve, but a wrong guess costs a step).
+    full: dict[str, str] = {}
+    for t in tables:
+        key = t.get("table_key") or t.get("name") or ""
+        for n in _table_names(t):
+            full.setdefault(n, key)
+
+    def k(name: str) -> str:
+        return full.get(name) or full.get(name.lower()) or name
+
     if schema.get("description"):
         lines.append(f"  About: {schema['description'].strip()[:600]}")
     if schema.get("rules"):
@@ -482,11 +493,11 @@ def build_overview(schema: dict[str, Any], tables: list[dict[str, Any]], *, max_
         lines.append("  Glossary:")
         for g in gl[:15]:
             alias = f" / {', '.join(g['aka'][:4])}" if g.get("aka") else ""
-            to = f" → {', '.join(g['maps_to'][:3])}" if g.get("maps_to") else ""
+            to = f" → {', '.join(k(x) for x in g['maps_to'][:3])}" if g.get("maps_to") else ""
             lines.append(f"    - {g['term']}{alias}{to}" + (f": {g['meaning'][:100]}" if g.get("meaning") else ""))
     docs = [t for t in visible_tables(tables) if (t.get("metadata") or {}).get("schema_documented")]
     if docs:
-        lines.append("  Documented tables:")
+        lines.append("  Documented tables (use these exact table_key values in tool calls):")
         for t in docs:
             m = t.get("metadata") or {}
             name = (t.get("table_key") or t.get("name") or "?")
@@ -496,7 +507,7 @@ def build_overview(schema: dict[str, Any], tables: list[dict[str, Any]], *, max_
     if ex:
         lines.append("  Worked examples:")
         for e in ex[:6]:
-            lines.append(f"    - “{e['question'][:100]}” → {', '.join(e['tables'][:6])}" + (f" ({e['note'][:100]})" if e.get("note") else ""))
+            lines.append(f"    - “{e['question'][:100]}” → {', '.join(k(x) for x in e['tables'][:6])}" + (f" ({e['note'][:100]})" if e.get("note") else ""))
     text = "\n".join(lines)
     return text if len(text) <= max_chars else text[:max_chars].rstrip() + "\n    ... (truncated)"
 

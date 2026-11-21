@@ -418,14 +418,14 @@ def handle_read_catalog_metadata(
     if not catalog:
         return f"No cached catalog found for source '{source_id}'."
 
-    target = None
-    for t in catalog:
-        if t.get("table_key") == table_key:
-            target = t
-            break
+    from data_formulator.datalake.catalog_cache import resolve_catalog_entry
+    target, suggestions = resolve_catalog_entry(catalog, table_key)
 
     if target is None:
-        return f"Table with key '{table_key}' not found in source '{source_id}'."
+        hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+        return (f"Table with key '{table_key}' not found in source '{source_id}'.{hint} "
+                "Use the exact table_key shown by list_data / find_data.")
+    table_key = target.get("table_key", table_key)
 
     meta = target.get("metadata") or {}
 

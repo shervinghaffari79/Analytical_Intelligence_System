@@ -267,3 +267,42 @@ def test_template_round_trips_an_uploaded_schema():
     assert f2["columns"]["moshtari_id"]["references"] == "tbl_moshtari.moshtari_id"
     assert again["tables"]["tbl_moshtari"]["description"] == "مشتریان فروشگاه"
     assert again["tables"]["tbl_log"]["ignore"] is True
+
+
+# ------------------------------------------------- tolerant table-key resolution
+
+def test_short_and_case_variant_keys_resolve_to_the_real_table():
+    from data_formulator.datalake.catalog_cache import resolve_catalog_entry
+
+    cat = _catalog()
+    for key in ("db.tbl_faktor", "tbl_faktor", "TBL_FAKTOR", "db.TBL_faktor"):
+        entry, _ = resolve_catalog_entry(cat, key)
+        assert entry is not None and entry["table_key"] == "db.tbl_faktor", key
+    entry, hints = resolve_catalog_entry(cat, "tbl_fakter")
+    assert entry is None and "db.tbl_faktor" in hints, "a typo gets a suggestion, not a guess"
+    dup = cat + [{"name": "tbl_log", "table_key": "other.tbl_log", "metadata": {}}]
+    entry, hints = resolve_catalog_entry(dup, "tbl_log")
+    assert entry is None and set(hints) == {"db.tbl_log", "other.tbl_log"}, "ambiguous names are not guessed"
+
+
+def test_describe_and_load_plan_accept_short_names(stored):
+    from data_formulator.agents.agent_data_loading_chat import DataLoadingAgent
+    from data_formulator.agents.context import handle_read_catalog_metadata
+
+    ws = type("W", (), {"user_home": stored})()
+    assert "Table key: db.tbl_faktor" in handle_read_catalog_metadata("mysql:x", "tbl_faktor", ws)
+    missing = handle_read_catalog_metadata("mysql:x", "tbl_fakter", ws)
+    assert "not found" in missing and "Did you mean: db.tbl_faktor" in missing
+
+    agent = DataLoadingAgent.__new__(DataLoadingAgent)
+    agent.workspace = ws
+    agent._known_source_ids = lambda: {"mysql:x"}
+    cand = agent._normalize_load_plan_candidate({"source_id": "mysql:x", "table_key": "tbl_moshtari"})
+    assert "resolution_error" not in cand and cand["table_key"] == "db.tbl_moshtari"
+    assert agent._resolve_catalog_path("mysql:x", "tbl_moshtari") == ["db", "tbl_moshtari"]
+
+
+def test_overview_shows_full_keys_in_glossary_and_examples(stored):
+    text = cs.build_overview(_schema(), load_catalog(stored, "mysql:x"))
+    assert "→ db.tbl_moshtari" in text and "→ db.tbl_faktor" in text
+    assert "use these exact table_key values" in text

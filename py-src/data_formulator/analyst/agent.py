@@ -284,6 +284,14 @@ execute — you'll be asked to load it first. Extension skills available this ru
 # ---------------------------------------------------------------------------
 
 
+def _is_malformed_tool_call_error(exc: Exception) -> bool:
+    """Ollama could not parse the model's tool call (broken XML/JSON from a small model)."""
+    msg = str(exc).lower()
+    return "ollama" in msg and any(
+        k in msg for k in ("xml syntax error", "error parsing tool call", "unexpected response from ollama")
+    )
+
+
 class AnalystAgent:
     """Unified data analyst agent — core actions + on-demand skills."""
 
@@ -1488,7 +1496,16 @@ class AnalystAgent:
                      tools_available=[t["function"]["name"] for t in tools])
             llm_t0 = time.time()
             try:
-                response = yield from self._stream_llm(messages, tools)
+                try:
+                    response = yield from self._stream_llm(messages, tools)
+                except Exception as first_exc:
+                    # Small local models sometimes emit a tool call Ollama cannot parse
+                    # ("XML syntax error"); the next sample is usually fine.
+                    if not _is_malformed_tool_call_error(first_exc):
+                        raise
+                    logger.warning("[AnalystAgent] malformed tool call from the model; retrying once: %s",
+                                   str(first_exc)[:200])
+                    response = yield from self._stream_llm(messages, tools)
             except Exception as exc:
                 llm_latency = int((time.time() - llm_t0) * 1000)
                 rlog.log("llm_response", iteration=outer_iteration,

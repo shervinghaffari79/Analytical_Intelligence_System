@@ -83,6 +83,68 @@ def _ends_with_question(turn_text: str) -> bool:
     return turn_text.rstrip("*_ \n\t").endswith(("?", "؟", "？"))
 
 
+# --- Guard against invented data ---------------------------------------------
+# Small models, asked for data they cannot find, sometimes type a plausible-looking
+# table into show_user_data_preview / execute_python and offer a "Load" button for
+# it. The user then analyses numbers that exist nowhere. A table may only be shown
+# for loading when its values come from the user (pasted text, an image) or from a
+# tool result — or when the user explicitly asked for generated data.
+_SYNTHETIC_REQUEST_RE = re.compile(
+    r"synthetic|fake|dummy|mock|made[- ]?up|simulat|random(ly)? generat|generate (some |a few |random |fake )?(data|rows|table)"
+    r"|مصنوعی|ساختگی|فرضی|تصادفی|شبیه.?سازی|جعلی",
+    re.IGNORECASE,
+)
+_CODE_READS_DATA_RE = re.compile(
+    r"read_(csv|parquet|excel|json|html|table|sql|feather|fwf)|duckdb|open\(|\.parquet|\.csv|\.json|\.xlsx?"
+    r"|scratch|workspace|requests\.|urllib|sqlite|connect\(|glob|listdir|Path\(",
+)
+_INVENTED_DATA_ERROR = (
+    "BLOCKED: these values do not appear in anything the user provided, nor in any tool "
+    "result, so showing them would present INVENTED data as real. Do not show, load or "
+    "analyse them. Look for the real table with find_data / list_data / describe_data and "
+    "propose it with propose_load_plan. If it does not exist in the connected sources, tell "
+    "the user plainly that you could not find it and offer to help connect a source — do not "
+    "make data up. (Only generate sample rows if the user explicitly asked for synthetic data.)"
+)
+
+
+def _user_asked_for_synthetic(user_text: str) -> bool:
+    return bool(_SYNTHETIC_REQUEST_RE.search(user_text or ""))
+
+
+def _values_come_from_user(df, user_text: str) -> bool:
+    """True when most cell values of *df* literally occur in what the user wrote."""
+    haystack = _norm_for_match(user_text)
+    tokens: list[str] = []
+    for v in list(df.columns) + [c for row in df.head(30).values.tolist() for c in row]:
+        t = _norm_for_match(str(v))
+        if len(t) >= 2:
+            tokens.append(t)
+    tokens = tokens[:80]
+    if not tokens:
+        return False
+    return sum(1 for t in tokens if t in haystack) / len(tokens) >= 0.5
+
+
+def _norm_for_match(text: str) -> str:
+    return re.sub(r"[\s,_]+", "", str(text).lower().replace("\u200c", ""))
+
+
+def _is_malformed_tool_call_error(exc: Exception) -> bool:
+    """Ollama failed to parse the model's tool call (small models emit broken XML/JSON)."""
+    msg = str(exc).lower()
+    return "ollama" in msg and any(
+        k in msg for k in ("xml syntax error", "error parsing tool call", "unexpected response from ollama")
+    )
+
+
+_MALFORMED_TOOL_CALL_NOTICE = (
+    "(system notice) Your last tool call was malformed and was discarded, so nothing ran. "
+    "Call the tool again with valid arguments. Do not repeat your previous text."
+)
+_MAX_MALFORMED_RETRIES = 2
+
+
 def _looks_unfinished(turn_text: str, *, used_tools: bool) -> bool:
     """True when a tool-free turn reads as a step announced but not taken.
 
@@ -880,6 +942,14 @@ class DataLoadingAgent:
             if msg.get("role") == "user":
                 last_user_text = str(msg.get("content", ""))
                 break
+        # What the user actually supplied: used to refuse tables the model made up.
+        self._user_text = "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "user")
+        self._has_images = any(
+            (a or {}).get("type") == "image"
+            for m in messages for a in (m.get("attachments") or [])
+        )
+        self._synthetic_ok = _user_asked_for_synthetic(self._user_text)
+        self._literal_dfs = set()
         system_prompt = self._build_system_prompt(last_user_text)
         llm_messages = [{"role": "system", "content": system_prompt}]
 
@@ -922,6 +992,7 @@ class DataLoadingAgent:
     def _agentic_loop(self, llm_messages, collected_text, actions, max_iterations):
         """Inner loop extracted so stream_chat can wrap it in a SandboxSession."""
         stall_nudges = 0
+        malformed_retries = 0
         explored = False       # a catalog discovery tool ran this turn
         awaiting_done = False  # last prompt offered the DONE exit
         soft_nudged = False
@@ -941,37 +1012,47 @@ class DataLoadingAgent:
             accumulated_reasoning = None
             finish_reason = None
 
-            for chunk in response:
-                if not hasattr(chunk, 'choices') or len(chunk.choices) == 0:
+            try:
+                for chunk in response:
+                    if not hasattr(chunk, 'choices') or len(chunk.choices) == 0:
+                        continue
+
+                    delta = chunk.choices[0].delta
+                    finish_reason = chunk.choices[0].finish_reason
+
+                    # Accumulate reasoning_content (DeepSeek V4 reasoning models)
+                    accumulated_reasoning = accumulate_reasoning_content(
+                        accumulated_reasoning, delta
+                    )
+
+                    # Stream text tokens
+                    if hasattr(delta, 'content') and delta.content:
+                        current_text.append(delta.content)
+                        if awaiting_done and held is not None:
+                            # Hold the first few characters back: if the reply is
+                            # just the DONE sentinel it must not reach the user.
+                            held += delta.content
+                            if len(held.strip()) <= len(_DONE_SENTINEL) + 2 and _DONE_SENTINEL.startswith(held.strip(" .\n*`\"'")[:len(_DONE_SENTINEL)]):
+                                continue
+                            text_out, held = held, None
+                        else:
+                            text_out = delta.content
+                        collected_text.append(text_out)
+                        yield {"type": "text_delta", "content": text_out}
+
+                    # Accumulate tool calls
+                    if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            tool_calls_acc.add(tc_delta)
+
+            except Exception as stream_exc:
+                if _is_malformed_tool_call_error(stream_exc) and malformed_retries < _MAX_MALFORMED_RETRIES:
+                    malformed_retries += 1
+                    logger.warning("[DataLoadingChat] malformed tool call from the model (%d/%d): %s",
+                                   malformed_retries, _MAX_MALFORMED_RETRIES, str(stream_exc)[:200])
+                    llm_messages.append({"role": "user", "content": _MALFORMED_TOOL_CALL_NOTICE})
                     continue
-
-                delta = chunk.choices[0].delta
-                finish_reason = chunk.choices[0].finish_reason
-
-                # Accumulate reasoning_content (DeepSeek V4 reasoning models)
-                accumulated_reasoning = accumulate_reasoning_content(
-                    accumulated_reasoning, delta
-                )
-
-                # Stream text tokens
-                if hasattr(delta, 'content') and delta.content:
-                    current_text.append(delta.content)
-                    if awaiting_done and held is not None:
-                        # Hold the first few characters back: if the reply is
-                        # just the DONE sentinel it must not reach the user.
-                        held += delta.content
-                        if len(held.strip()) <= len(_DONE_SENTINEL) + 2 and _DONE_SENTINEL.startswith(held.strip(" .\n*`\"'")[:len(_DONE_SENTINEL)]):
-                            continue
-                        text_out, held = held, None
-                    else:
-                        text_out = delta.content
-                    collected_text.append(text_out)
-                    yield {"type": "text_delta", "content": text_out}
-
-                # Accumulate tool calls
-                if hasattr(delta, 'tool_calls') and delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        tool_calls_acc.add(tc_delta)
+                raise
 
             if awaiting_done and held and held.strip(" .\n*`\"'") != _DONE_SENTINEL:
                 collected_text.append(held)
@@ -1435,6 +1516,12 @@ class DataLoadingAgent:
 
                 if saved:
                     response["saved_dataframes"] = saved
+                    # DataFrames made by code that reads nothing were typed in by the
+                    # model; remember them so they cannot be offered for loading.
+                    if not _CODE_READS_DATA_RE.search(code):
+                        if not hasattr(self, "_literal_dfs"):
+                            self._literal_dfs = set()
+                        self._literal_dfs.update(saved)
 
                 return response
             else:
@@ -1620,6 +1707,11 @@ class DataLoadingAgent:
         tables = args.get("tables")
 
         if saved_dfs:
+            literal = getattr(self, "_literal_dfs", set())
+            invented = [n for n in saved_dfs if n in literal]
+            if invented and not getattr(self, "_synthetic_ok", False) and not getattr(self, "_has_images", False):
+                logger.info("[DataLoadingChat] blocked preview of invented data: %s", invented)
+                return {"error": _INVENTED_DATA_ERROR}
             return self._preview_saved_dfs(saved_dfs, scratch_jail)
         elif tables:
             return self._preview_inline_tables(tables, scratch_jail)
@@ -1669,6 +1761,10 @@ class DataLoadingAgent:
 
             try:
                 df = pd.read_csv(io.StringIO(csv_data))
+                if (not getattr(self, "_has_images", False) and not getattr(self, "_synthetic_ok", False)
+                        and not _values_come_from_user(df, getattr(self, "_user_text", ""))):
+                    logger.info("[DataLoadingChat] blocked inline table '%s': values not from the user", name)
+                    return {"error": _INVENTED_DATA_ERROR}
                 csv_path = scratch_jail.resolve(f"{name}.csv")
                 df.to_csv(csv_path, index=False)
 
